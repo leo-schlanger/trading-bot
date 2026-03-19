@@ -22,6 +22,11 @@ from typing import Dict, Any, Optional
 # Setup path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Create directories before logging setup
+Path('logs').mkdir(exist_ok=True)
+Path('state').mkdir(exist_ok=True)
+Path('results').mkdir(exist_ok=True)
+
 import pandas as pd
 import numpy as np
 
