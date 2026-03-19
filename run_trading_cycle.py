@@ -38,6 +38,7 @@ from src.optimization.param_optimizer import ParamOptimizer
 from src.bot.safety_controls import SafetyControls, CircuitBreakerConfig
 from src.indicators.technical import atr, sma
 from src.notifications import TelegramNotifier, notify_error
+from src.signals import RegimeSignalGenerator, SignalDirection, SignalStrength
 
 # Configurar logging
 logging.basicConfig(
@@ -64,6 +65,7 @@ class TradingCycle:
         self.strategy_selector = StrategySelector()
         self.feature_generator = FeatureGenerator()
         self.param_optimizer = ParamOptimizer()
+        self.signal_generator = RegimeSignalGenerator()
 
         # Carregar estado anterior
         self.state = self._load_state()
@@ -209,90 +211,57 @@ class TradingCycle:
 
         logger.info(f"Estratégia selecionada: {STRATEGY_NAMES[strategy_type]} (confiança: {confidence:.2f})")
 
-        # 4. Gerar features e verificar sinal
-        features = self.feature_generator.get_strategy_features(df)
-        latest = features.iloc[-1] if len(features) > 0 else None
+        # 4. Gerar sinal usando RegimeSignalGenerator (2026 best practices)
+        trade_signal = self.signal_generator.generate_signal(df, regime.value)
 
-        if latest is not None:
-            # Análise simplificada de sinal baseada em features
-            signal = self._generate_signal(df, regime, strategy_type)
-            result['signal'] = signal
+        result['details']['signal_strength'] = trade_signal.strength.name
+        result['details']['signal_confidence'] = trade_signal.confidence
+        result['details']['signal_reasons'] = trade_signal.reasons
+        result['details']['signal_strategy'] = trade_signal.strategy
 
-            if signal > 0:
-                result['action'] = 'BUY'
-            elif signal < 0:
-                result['action'] = 'SELL'
-            else:
-                result['action'] = 'HOLD'
+        if trade_signal.direction == SignalDirection.LONG:
+            result['signal'] = 1
+            result['action'] = 'LONG'
+        elif trade_signal.direction == SignalDirection.SHORT:
+            result['signal'] = -1
+            result['action'] = 'SHORT'
+        else:
+            result['signal'] = 0
+            result['action'] = 'HOLD'
 
         # 5. Calcular position size se houver sinal
         if result['signal'] != 0:
             close = df['close'].iloc[-1]
-            stop_distance = current_atr * 2.0
 
-            if result['signal'] > 0:
+            # Usar ATR multipliers do signal para stops e targets
+            stop_distance = current_atr * trade_signal.stop_multiplier
+            target_distance = current_atr * trade_signal.target_multiplier
+
+            if result['signal'] > 0:  # LONG
                 stop_loss = close - stop_distance
-            else:
+                take_profit = close + target_distance
+            else:  # SHORT
                 stop_loss = close + stop_distance
+                take_profit = close - target_distance
 
+            # Position sizing do risk manager ajustado pelo signal
             sizing = self.risk_manager.get_position_size(regime, close, stop_loss)
-            sizing['position_value'] *= safety_result.get('position_multiplier', 1.0)
+
+            # Aplicar multiplicadores: safety + signal confidence
+            position_multiplier = safety_result.get('position_multiplier', 1.0)
+            position_multiplier *= trade_signal.position_size_pct
+
+            sizing['position_value'] *= position_multiplier
+            sizing['signal_position_pct'] = trade_signal.position_size_pct
 
             result['details']['sizing'] = sizing
             result['details']['price'] = close
             result['details']['stop_loss'] = stop_loss
+            result['details']['take_profit'] = take_profit
+            result['details']['stop_atr_mult'] = trade_signal.stop_multiplier
+            result['details']['target_atr_mult'] = trade_signal.target_multiplier
 
         return result
-
-    def _generate_signal(self, df: pd.DataFrame, regime: MarketRegime, strategy: StrategyType) -> int:
-        """Gera sinal simplificado baseado em indicadores."""
-        close = df['close'].iloc[-1]
-        prev_close = df['close'].iloc[-2]
-
-        # Features básicas
-        rsi = df['close'].diff().apply(lambda x: max(x, 0)).rolling(14).mean() / \
-              df['close'].diff().abs().rolling(14).mean() * 100
-        rsi_val = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
-
-        ma_50 = df['close'].rolling(50).mean().iloc[-1]
-        ma_200 = df['close'].rolling(200).mean().iloc[-1]
-
-        # Supertrend direction (simplificado)
-        atr_val = df['atr'].iloc[-1] if 'atr' in df.columns else 0
-        upper = (df['high'] + df['low']) / 2 + (3 * atr_val)
-        lower = (df['high'] + df['low']) / 2 - (3 * atr_val)
-        trend_up = close > lower.iloc[-1]
-
-        signal = 0
-
-        # Lógica por regime
-        if regime == MarketRegime.BULL:
-            # Em bull, procurar continuação de tendência
-            if close > ma_50 > ma_200 and rsi_val < 70 and trend_up:
-                signal = 1
-            elif rsi_val > 80:
-                signal = -1  # Overbought
-
-        elif regime == MarketRegime.BEAR:
-            # Em bear, mais conservador
-            if close < ma_50 < ma_200 and rsi_val > 30 and not trend_up:
-                signal = -1
-            elif rsi_val < 20:
-                signal = 1  # Oversold bounce
-
-        elif regime == MarketRegime.SIDEWAYS:
-            # Mean reversion
-            if rsi_val < 30:
-                signal = 1
-            elif rsi_val > 70:
-                signal = -1
-
-        elif regime == MarketRegime.CORRECTION:
-            # Muito conservador - só oversold extremo
-            if rsi_val < 25:
-                signal = 1
-
-        return signal
 
     def execute(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Executa a ação recomendada."""
@@ -306,6 +275,14 @@ class TradingCycle:
         if analysis['action'] in ['HOLD', 'SKIP', 'BLOCKED']:
             logger.info(f"Nenhuma ação: {analysis['action']}")
             return result
+
+        # Log signal details for LONG/SHORT
+        if analysis['action'] in ['LONG', 'SHORT']:
+            details = analysis.get('details', {})
+            logger.info(f"Signal: {analysis['action']} | "
+                       f"Strength: {details.get('signal_strength', 'N/A')} | "
+                       f"Confidence: {details.get('signal_confidence', 0):.2f} | "
+                       f"Reasons: {', '.join(details.get('signal_reasons', []))}")
 
         if self.mode == 'backtest':
             logger.info("Modo backtest - simulando execução")
@@ -333,13 +310,20 @@ class TradingCycle:
         if 'sizing' not in analysis['details']:
             return
 
+        details = analysis['details']
         trade = {
             'timestamp': analysis['timestamp'],
             'symbol': analysis['symbol'],
-            'action': analysis['action'],
-            'price': analysis['details'].get('price', 0),
-            'size': analysis['details']['sizing'].get('position_size', 0),
-            'value': analysis['details']['sizing'].get('position_value', 0)
+            'action': analysis['action'],  # LONG or SHORT
+            'regime': analysis['regime'],
+            'price': details.get('price', 0),
+            'stop_loss': details.get('stop_loss', 0),
+            'take_profit': details.get('take_profit', 0),
+            'size': details['sizing'].get('position_size', 0),
+            'value': details['sizing'].get('position_value', 0),
+            'signal_strength': details.get('signal_strength', 'N/A'),
+            'signal_confidence': details.get('signal_confidence', 0),
+            'signal_reasons': details.get('signal_reasons', [])
         }
 
         # Salvar no estado
@@ -405,8 +389,8 @@ class TradingCycle:
             # Executar
             execution = self.execute(analysis)
 
-            # Notificar
-            if analysis['action'] not in ['HOLD', 'SKIP']:
+            # Notificar (apenas para sinais ativos: LONG, SHORT, BLOCKED)
+            if analysis['action'] in ['LONG', 'SHORT', 'BLOCKED']:
                 self.send_notification(analysis, execution)
 
             results.append({
@@ -429,7 +413,22 @@ class TradingCycle:
         logger.info("RESUMO DO CICLO")
         logger.info("=" * 50)
         for r in results:
-            logger.info(f"{r['symbol']}: {r['analysis']['action']} ({r['analysis']['regime']})")
+            analysis = r['analysis']
+            details = analysis.get('details', {})
+            action = analysis['action']
+            regime = analysis['regime']
+
+            if action in ['LONG', 'SHORT']:
+                strength = details.get('signal_strength', 'N/A')
+                conf = details.get('signal_confidence', 0)
+                price = details.get('price', 0)
+                stop = details.get('stop_loss', 0)
+                target = details.get('take_profit', 0)
+                logger.info(f"{r['symbol']}: {action} | Regime: {regime} | "
+                           f"Strength: {strength} | Confidence: {conf:.2f}")
+                logger.info(f"  Price: ${price:.2f} | Stop: ${stop:.2f} | Target: ${target:.2f}")
+            else:
+                logger.info(f"{r['symbol']}: {action} ({regime})")
 
         return results
 
