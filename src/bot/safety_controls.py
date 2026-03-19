@@ -254,9 +254,16 @@ class SafetyControls:
     def _check_regime_change(self, results: Dict, regime: MarketRegime) -> None:
         """Check for regime change and apply pause if configured."""
         if not self.config.pause_on_regime_change:
+            self.state.last_regime = regime
             return
 
-        if self.state.last_regime is not None and regime != self.state.last_regime:
+        # Don't pause on first run (when last_regime is None)
+        if self.state.last_regime is None:
+            self.state.last_regime = regime
+            self.state.bars_since_regime_change = self.config.regime_change_pause_bars  # Skip pause
+            return
+
+        if regime != self.state.last_regime:
             self.state.bars_since_regime_change = 0
             self._get_or_create_breaker(
                 CircuitBreakerType.REGIME_CHANGE,
