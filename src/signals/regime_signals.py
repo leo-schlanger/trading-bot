@@ -13,13 +13,16 @@ Key principles:
 3. Adjust position size and stops based on regime
 4. Different strategies per regime
 5. Both long AND short signals in all regimes
+6. TRAP DETECTION - avoid false signals
 """
 
 import pandas as pd
 import numpy as np
 from enum import Enum
-from typing import Dict, Tuple, Optional
-from dataclasses import dataclass
+from typing import Dict, List, Tuple, Optional
+from dataclasses import dataclass, field
+
+from .trap_detector import TrapDetector, TrapSignal, MarketContext, TrapType
 
 
 class SignalDirection(Enum):
@@ -45,6 +48,10 @@ class TradeSignal:
     stop_multiplier: float  # ATR multiplier for stop
     target_multiplier: float  # ATR multiplier for take profit
     position_size_pct: float  # Suggested position size as % of capital
+    # Trap detection
+    traps_detected: List[str] = field(default_factory=list)
+    trap_warning: bool = False
+    original_direction: Optional[SignalDirection] = None  # Before trap filter
 
 
 class RegimeSignalGenerator:
@@ -58,7 +65,11 @@ class RegimeSignalGenerator:
     - CORRECTION: Minimal trading, tight stops
     """
 
-    def __init__(self):
+    def __init__(self, enable_trap_detection: bool = True):
+        # Trap detector
+        self.trap_detector = TrapDetector() if enable_trap_detection else None
+        self.enable_trap_detection = enable_trap_detection
+
         # Regime-specific parameters
         self.regime_config = {
             'BULL': {
@@ -330,6 +341,68 @@ class RegimeSignalGenerator:
         else:
             strategy = 'momentum'
 
+        # === TRAP DETECTION ===
+        traps_detected = []
+        trap_warning = False
+        original_direction = direction
+
+        if self.enable_trap_detection and self.trap_detector:
+            # Build market context
+            atr_current = latest['atr']
+            atr_avg = df['atr'].rolling(50).mean().iloc[-1]
+            vol_ratio = atr_current / atr_avg if atr_avg > 0 else 1.0
+
+            context = MarketContext(
+                volatility_ratio=vol_ratio,
+                trend_strength=latest['adx'],
+                volume_ratio=latest['volume_ratio'],
+                regime=regime.lower()
+            )
+
+            # Detect traps
+            traps = self.trap_detector.detect_all_traps(df, context)
+            trap_summary = self.trap_detector.get_trap_summary(traps)
+
+            if trap_summary['has_traps']:
+                traps_detected = [t['type'] for t in trap_summary.get('trap_details', [])]
+                trap_warning = True
+
+                # Check if our signal direction conflicts with trap
+                if direction == SignalDirection.LONG and trap_summary['avoid_long']:
+                    # Potential trap - reduce confidence or neutralize
+                    high_conf_trap = any(t['confidence'] > 0.7 for t in trap_summary.get('trap_details', [])
+                                        if t['action'] == 'avoid_long')
+                    if high_conf_trap:
+                        # High confidence trap - neutralize signal
+                        reasons.append('BLOCKED_BY_TRAP')
+                        direction = SignalDirection.NEUTRAL
+                        strength = SignalStrength.NONE
+                        confidence = 0.0
+                    else:
+                        # Lower confidence trap - reduce position
+                        confidence *= 0.5
+                        reasons.append('trap_warning_long')
+
+                elif direction == SignalDirection.SHORT and trap_summary['avoid_short']:
+                    high_conf_trap = any(t['confidence'] > 0.7 for t in trap_summary.get('trap_details', [])
+                                        if t['action'] == 'avoid_short')
+                    if high_conf_trap:
+                        reasons.append('BLOCKED_BY_TRAP')
+                        direction = SignalDirection.NEUTRAL
+                        strength = SignalStrength.NONE
+                        confidence = 0.0
+                    else:
+                        confidence *= 0.5
+                        reasons.append('trap_warning_short')
+
+                # If trap suggests waiting, reduce confidence
+                if trap_summary['wait']:
+                    confidence *= 0.7
+                    reasons.append('volume_anomaly_wait')
+
+        # Recalculate position size with adjusted confidence
+        position_size = config['position_size'] * (0.5 + confidence * 0.5) if confidence > 0 else 0
+
         return TradeSignal(
             direction=direction,
             strength=strength,
@@ -338,7 +411,10 @@ class RegimeSignalGenerator:
             reasons=reasons,
             stop_multiplier=config['stop_atr'],
             target_multiplier=config['target_atr'],
-            position_size_pct=config['position_size'] * (0.5 + confidence * 0.5)
+            position_size_pct=position_size,
+            traps_detected=traps_detected,
+            trap_warning=trap_warning,
+            original_direction=original_direction if original_direction != direction else None
         )
 
     def get_regime_strategy_recommendation(self, regime: str) -> Dict:
