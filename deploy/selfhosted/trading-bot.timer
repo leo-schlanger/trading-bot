@@ -1,0 +1,20 @@
+# Systemd Timer para Trading Bot
+# Instalar em: /etc/systemd/system/trading-bot.timer
+#
+# Executa a cada 4 horas (igual GitHub Actions)
+
+[Unit]
+Description=Run Trading Bot every 4 hours
+
+[Timer]
+# A cada 4 horas, começando 00:00
+OnCalendar=*-*-* 00,04,08,12,16,20:00:00
+
+# Executar imediatamente se perdeu o horário (ex: boot)
+Persistent=true
+
+# Pequeno delay aleatório para evitar pico de carga
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

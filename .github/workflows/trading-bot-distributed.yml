@@ -1,0 +1,203 @@
+# =============================================================================
+# Trading Bot - Distributed Architecture
+# Stateless execution with external state management
+# =============================================================================
+
+name: Trading Bot
+
+on:
+  schedule:
+    # Cada 4 horas UTC
+    - cron: '0 */4 * * *'
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo'
+        default: 'paper'
+        type: choice
+        options: [paper, live, backtest]
+      force_run:
+        description: 'Forçar execução (ignorar safety checks)'
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  trading-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy requests python-telegram-bot aiohttp
+          pip install scikit-learn xgboost hmmlearn joblib
+          pip install boto3  # Para Cloudflare R2
+
+      # ===== CARREGAR ESTADO DO CLOUDFLARE =====
+      - name: Load state from Cloudflare
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+        run: |
+          python -c "
+          import os
+          import requests
+          import json
+
+          account_id = os.environ['CF_ACCOUNT_ID']
+          api_token = os.environ['CF_API_TOKEN']
+          namespace_id = os.environ['CF_KV_NAMESPACE_ID']
+
+          if not all([account_id, api_token, namespace_id]):
+              print('Cloudflare not configured, using local state')
+              exit(0)
+
+          url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/state:bot'
+          headers = {'Authorization': f'Bearer {api_token}'}
+
+          try:
+              response = requests.get(url, headers=headers)
+              if response.status_code == 200:
+                  state = response.json()
+                  os.makedirs('state', exist_ok=True)
+                  with open('state/trading_state.json', 'w') as f:
+                      json.dump(state, f, indent=2)
+                  print('State loaded from Cloudflare KV')
+              else:
+                  print(f'No existing state (status: {response.status_code})')
+          except Exception as e:
+              print(f'Error loading state: {e}')
+          "
+
+      # ===== BAIXAR MODELOS DO CLOUDFLARE R2 =====
+      - name: Download ML models from R2
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_R2_ACCESS_KEY: ${{ secrets.CF_R2_ACCESS_KEY }}
+          CF_R2_SECRET_KEY: ${{ secrets.CF_R2_SECRET_KEY }}
+        run: |
+          mkdir -p models
+          python -c "
+          import os
+          import boto3
+          from botocore.exceptions import ClientError
+
+          account_id = os.environ.get('CF_ACCOUNT_ID', '')
+          access_key = os.environ.get('CF_R2_ACCESS_KEY', '')
+          secret_key = os.environ.get('CF_R2_SECRET_KEY', '')
+
+          if not all([account_id, access_key, secret_key]):
+              print('R2 not configured, skipping model download')
+              exit(0)
+
+          try:
+              s3 = boto3.client(
+                  's3',
+                  endpoint_url=f'https://{account_id}.r2.cloudflarestorage.com',
+                  aws_access_key_id=access_key,
+                  aws_secret_access_key=secret_key,
+              )
+
+              # Download models
+              for model in ['regime_hmm.pkl', 'strategy_xgb.pkl']:
+                  try:
+                      s3.download_file('trading-bot', f'models/{model}', f'models/{model}')
+                      print(f'Downloaded {model}')
+                  except ClientError as e:
+                      print(f'Model {model} not found: {e}')
+          except Exception as e:
+              print(f'R2 error: {e}')
+          "
+
+      # ===== BAIXAR DADOS RECENTES =====
+      - name: Download market data
+        run: |
+          mkdir -p data/raw
+          python scripts/download_recent_data.py --symbol BTC --bars 500
+          python scripts/download_recent_data.py --symbol ETH --bars 500
+
+      # ===== EXECUTAR CICLO DE TRADING =====
+      - name: Run trading cycle
+        env:
+          TRADING_MODE: ${{ github.event.inputs.mode || 'paper' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
+          EXCHANGE_SECRET: ${{ secrets.EXCHANGE_SECRET }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+          CF_D1_DATABASE_ID: ${{ secrets.CF_D1_DATABASE_ID }}
+        run: |
+          python run_trading_cycle.py --mode $TRADING_MODE
+
+      # ===== SALVAR ESTADO NO CLOUDFLARE =====
+      - name: Save state to Cloudflare
+        if: always()
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}
+        run: |
+          python -c "
+          import os
+          import requests
+          import json
+
+          account_id = os.environ.get('CF_ACCOUNT_ID', '')
+          api_token = os.environ.get('CF_API_TOKEN', '')
+          namespace_id = os.environ.get('CF_KV_NAMESPACE_ID', '')
+
+          if not all([account_id, api_token, namespace_id]):
+              print('Cloudflare not configured')
+              exit(0)
+
+          # Ler estado local
+          state_file = 'state/trading_state.json'
+          if not os.path.exists(state_file):
+              print('No state to save')
+              exit(0)
+
+          with open(state_file, 'r') as f:
+              state = json.load(f)
+
+          # Salvar no KV
+          url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/state:bot'
+          headers = {
+              'Authorization': f'Bearer {api_token}',
+              'Content-Type': 'application/json'
+          }
+
+          response = requests.put(url, headers=headers, data=json.dumps(state))
+          if response.status_code == 200:
+              print('State saved to Cloudflare KV')
+          else:
+              print(f'Error saving state: {response.status_code}')
+          "
+
+      # ===== UPLOAD DE LOGS =====
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-logs-${{ github.run_number }}
+          path: |
+            logs/
+            state/
+            results/
+          retention-days: 7

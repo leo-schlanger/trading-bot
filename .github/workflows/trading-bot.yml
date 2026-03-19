@@ -1,0 +1,89 @@
+# =============================================================================
+# Trading Bot - Scheduled Execution
+# Runs automatically every 4 hours (4h timeframe)
+# =============================================================================
+
+name: Trading Bot 4H
+
+on:
+  # Rodar a cada 4 horas (UTC)
+  schedule:
+    - cron: '0 */4 * * *'  # 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
+
+  # Permitir execução manual para testes
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de execução'
+        required: true
+        default: 'paper'
+        type: choice
+        options:
+          - paper
+          - live
+          - backtest
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # Limite de segurança
+
+    steps:
+      # 1. Checkout do código
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Setup Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # 3. Instalar dependências
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. Baixar dados mais recentes (últimas 500 velas para análise)
+      - name: Download latest market data
+        run: |
+          python scripts/download_recent_data.py --symbol BTC --bars 500
+          python scripts/download_recent_data.py --symbol ETH --bars 500
+
+      # 5. Executar análise e decisão de trade
+      - name: Run trading analysis
+        env:
+          # Secrets configurados no GitHub
+          EXCHANGE_API_KEY: ${{ secrets.EXCHANGE_API_KEY }}
+          EXCHANGE_SECRET: ${{ secrets.EXCHANGE_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TRADING_MODE: ${{ github.event.inputs.mode || 'paper' }}
+        run: |
+          python run_trading_cycle.py --mode $TRADING_MODE
+
+      # 6. Salvar estado (para próxima execução)
+      - name: Save trading state
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-state-${{ github.run_number }}
+          path: |
+            state/
+            logs/
+          retention-days: 7
+
+      # 7. Commit de logs/resultados (opcional)
+      - name: Commit results
+        if: success()
+        run: |
+          git config --local user.email "bot@trading.local"
+          git config --local user.name "Trading Bot"
+          git add -A results/ logs/ || true
+          git diff --staged --quiet || git commit -m "Trading cycle $(date +'%Y-%m-%d %H:%M UTC')"
+          git push || true
+        continue-on-error: true

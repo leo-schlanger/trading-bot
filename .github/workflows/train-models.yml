@@ -1,0 +1,134 @@
+# =============================================================================
+# ML Model Training Pipeline
+# Runs weekly or on-demand
+# =============================================================================
+
+name: Train ML Models
+
+on:
+  # Weekly training (Sunday 00:00 UTC)
+  schedule:
+    - cron: '0 0 * * 0'
+
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      full_retrain:
+        description: 'Full retrain from scratch?'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 horas máx para treino
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Baixar dados históricos completos
+      - name: Download historical data
+        run: |
+          mkdir -p data/raw
+          python scripts/download_recent_data.py --symbol BTC --bars 8760
+          python scripts/download_recent_data.py --symbol ETH --bars 8760
+
+      # Gerar features
+      - name: Generate features
+        run: |
+          mkdir -p data/processed
+          python training/generate_features.py \
+            --data data/raw/BTC_4h.csv \
+            --output data/processed \
+            --asset BTC \
+            --type both
+
+      # Treinar modelo de regime (HMM)
+      - name: Train regime model
+        run: |
+          mkdir -p models
+          python training/train_regime_model.py \
+            --features data/processed/BTC_regime_features.parquet \
+            --labels data/processed/BTC_regime_labels.parquet \
+            --output models/regime_hmm.pkl \
+            --validate
+
+      # Treinar modelo de seleção (XGBoost)
+      - name: Train strategy selector
+        run: |
+          python training/train_selector_model.py \
+            --features data/processed/BTC_strategy_features.parquet \
+            --output models/strategy_xgb.pkl \
+            --validate \
+            --importance
+
+      # Upload models to Cloudflare R2
+      - name: Upload models to R2
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_R2_ACCESS_KEY: ${{ secrets.CF_R2_ACCESS_KEY }}
+          CF_R2_SECRET_KEY: ${{ secrets.CF_R2_SECRET_KEY }}
+        run: |
+          python -c "
+          import os
+          import boto3
+          from pathlib import Path
+
+          account_id = os.environ.get('CF_ACCOUNT_ID', '')
+          access_key = os.environ.get('CF_R2_ACCESS_KEY', '')
+          secret_key = os.environ.get('CF_R2_SECRET_KEY', '')
+
+          if not all([account_id, access_key, secret_key]):
+              print('R2 not configured, skipping upload')
+              exit(0)
+
+          try:
+              s3 = boto3.client(
+                  's3',
+                  endpoint_url=f'https://{account_id}.r2.cloudflarestorage.com',
+                  aws_access_key_id=access_key,
+                  aws_secret_access_key=secret_key,
+              )
+
+              # Upload all .pkl files
+              for model_file in Path('models').glob('*.pkl'):
+                  s3.upload_file(str(model_file), 'trading-bot', f'models/{model_file.name}')
+                  print(f'Uploaded {model_file.name} to R2')
+
+          except Exception as e:
+              print(f'R2 upload error: {e}')
+          "
+
+      # Commit dos modelos treinados (backup in repo)
+      - name: Commit trained models
+        run: |
+          git config --local user.email "bot@trading.local"
+          git config --local user.name "Training Bot"
+          git add models/*.pkl
+          git add models/*.csv 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "Update ML models $(date +'%Y-%m-%d')"
+          git push
+
+      # Upload artifacts
+      - name: Upload models as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-models-${{ github.run_number }}
+          path: models/
+          retention-days: 30

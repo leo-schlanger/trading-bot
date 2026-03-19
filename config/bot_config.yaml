@@ -1,0 +1,206 @@
+# Intelligent Trading Bot Configuration
+# ===========================================
+# Capital: $500 | Assets: BTC + ETH | Timeframe: 4h
+# Regime: Hybrid (HMM + Rules) | Mode: 100% Automatic
+
+# General Settings
+general:
+  initial_capital: 500.0
+  assets:
+    - BTC
+    - ETH
+  timeframe: "4h"
+  mode: "automatic"  # automatic, semi-automatic, manual
+
+# Exchange/Broker Settings
+exchange:
+  maker_fee: 0.0002   # 0.02%
+  taker_fee: 0.001    # 0.1%
+  slippage: 0.0005    # 0.05%
+
+# Machine Learning Settings
+ml:
+  # Regime Detection
+  regime:
+    use_hmm: true
+    use_rules: true
+    rule_weight: 0.6      # Weight for rule-based detection
+    hmm_weight: 0.4       # Weight for HMM detection
+    hmm_states: 4         # BULL, BEAR, SIDEWAYS, CORRECTION
+    lookback_bars: 200    # Bars for regime detection
+
+  # Strategy Selection
+  strategy:
+    use_ml_selection: true
+    min_confidence: 0.3   # Minimum confidence to use ML selection
+    fallback_to_rules: true
+
+  # Model Paths
+  models:
+    regime_model: "models/regime_hmm.pkl"
+    strategy_model: "models/strategy_xgb.pkl"
+
+# Risk Management Settings
+risk:
+  # Position Sizing
+  max_position_pct: 0.95      # 95% = $475 max position
+  min_position_pct: 0.10      # 10% = $50 min position
+  base_risk_per_trade: 0.02   # 2% base risk per trade
+  max_risk_per_trade: 0.03    # 3% max risk
+  min_risk_per_trade: 0.01    # 1% min risk
+
+  # Kelly Criterion
+  use_kelly: true
+  kelly_fraction: 0.5  # Half-Kelly (conservative)
+
+  # Per-Regime Position Multipliers
+  regime_position:
+    bull: 0.80        # 80% of max in bull
+    bear: 0.50        # 50% of max in bear
+    sideways: 0.60    # 60% of max in sideways
+    correction: 0.30  # 30% of max in correction
+
+  # Per-Regime Risk Multipliers (applied to base_risk_per_trade)
+  regime_risk:
+    bull: 1.5         # 3% risk in bull
+    bear: 1.0         # 2% risk in bear
+    sideways: 1.0     # 2% risk in sideways
+    correction: 0.5   # 1% risk in correction
+
+  # Stop Loss ATR Multipliers
+  regime_stop_atr:
+    bull: 2.5
+    bear: 2.0
+    sideways: 1.5
+    correction: 1.5
+
+# Safety Controls (Circuit Breakers)
+safety:
+  enabled: true
+
+  # Consecutive Losses
+  max_consecutive_losses: 3
+  consecutive_loss_pause_hours: 24
+
+  # Daily Loss Limit
+  max_daily_loss_pct: 0.05  # 5% = $25
+
+  # Total Drawdown Limit
+  max_drawdown_pct: 0.20    # 20% = stop at $400
+  drawdown_resume_pct: 0.15 # Resume when DD < 15%
+
+  # Volatility Control
+  high_volatility_threshold: 2.0  # 2x average ATR
+  volatility_position_reduction: 0.5  # 50% position reduction
+
+  # Regime Change
+  pause_on_regime_change: true
+  regime_change_pause_bars: 2
+
+# Strategy Settings
+strategies:
+  # EMA Cross
+  ema_cross:
+    fast_period: 9
+    slow_period: 21
+    trend_period: 50
+    stop_atr: 2.0
+    tp_atr: 3.0
+
+  # RSI Reversal
+  rsi_reversal:
+    rsi_period: 14
+    oversold: 30
+    overbought: 70
+    bb_period: 20
+    stop_atr: 1.5
+    tp_atr: 2.5
+
+  # Trend Follow (Supertrend)
+  trend_follow:
+    supertrend_period: 10
+    supertrend_mult: 3.0
+    trend_period: 100
+    stop_atr: 2.5
+    tp_atr: 4.0
+    trailing_stop: true
+    trailing_atr: 2.0
+
+  # Hull MA
+  hull_ma:
+    period: 16
+    stop_atr: 2.0
+    tp_atr: 3.5
+
+  # Keltner Squeeze
+  keltner_squeeze:
+    ema_period: 20
+    atr_period: 10
+    multiplier: 2.0
+    bb_period: 20
+    stop_atr: 1.5
+    tp_atr: 2.5
+
+  # Williams RSI
+  williams_rsi:
+    williams_period: 14
+    rsi_period: 14
+    oversold: 20
+    overbought: 80
+    stop_atr: 1.5
+    tp_atr: 2.0
+
+  # Donchian Breakout
+  donchian_breakout:
+    entry_period: 20
+    exit_period: 10
+    stop_atr: 2.0
+    tp_atr: 3.5
+    trailing_stop: true
+    trailing_atr: 1.5
+
+  # Momentum
+  momentum:
+    fast_period: 10
+    slow_period: 20
+    rsi_period: 14
+    stop_atr: 2.0
+    tp_atr: 3.0
+
+# Trailing Stop Settings
+trailing_stop:
+  enabled: true
+  atr_multiplier: 2.0
+  min_profit_to_activate: 0.01  # 1% profit before trailing activates
+
+# Logging Settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  save_decisions: true
+  decisions_file: "logs/decisions.csv"
+  save_trades: true
+  trades_file: "logs/trades.csv"
+
+# Backtest Settings
+backtest:
+  start_date: "2022-01-01"
+  end_date: "2026-01-01"
+  data_dir: "data/raw"
+  results_dir: "results"
+  warm_up_bars: 200
+
+# Walk-Forward Validation Settings
+validation:
+  train_window_bars: 1095    # ~6 months at 4h
+  test_window_bars: 180      # ~1 month at 4h
+  step_size_bars: 180        # 1 month step
+  min_train_samples: 500
+  min_test_samples: 50
+  purge_window: 10           # Bars to skip between train/test
+
+# Performance Targets (for monitoring)
+performance_targets:
+  min_sharpe: 0.30
+  max_drawdown: 0.40
+  min_win_rate: 0.35
+  min_profit_factor: 1.2

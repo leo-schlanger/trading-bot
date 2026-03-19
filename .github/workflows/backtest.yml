@@ -1,0 +1,68 @@
+# =============================================================================
+# Backtest - On-demand historical testing
+# =============================================================================
+
+name: Run Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'Symbol'
+        required: true
+        default: 'BTC'
+        type: choice
+        options:
+          - BTC
+          - ETH
+      days:
+        description: 'Days of history'
+        required: true
+        default: '365'
+        type: string
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download data
+        run: |
+          BARS=$(( ${{ github.event.inputs.days }} * 6 ))
+          python scripts/download_recent_data.py \
+            --symbol ${{ github.event.inputs.symbol }} \
+            --bars $BARS
+
+      - name: Run backtest
+        run: |
+          python run_intelligent_bot.py \
+            --data data/raw/${{ github.event.inputs.symbol }}_4h.csv \
+            --mode backtest \
+            --verbose
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ github.event.inputs.symbol }}-${{ github.run_number }}
+          path: |
+            results/
+            logs/
+          retention-days: 30

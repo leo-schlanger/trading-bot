@@ -1,0 +1,76 @@
+# Docker Compose para Trading Bot
+#
+# Uso:
+#   cd deploy/docker
+#   docker-compose up -d
+#
+# Com scheduler (ofelia):
+#   docker-compose --profile scheduler up -d
+#
+# Logs:
+#   docker-compose logs -f trading-bot
+
+version: '3.8'
+
+services:
+  trading-bot:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: trading-bot
+    restart: unless-stopped
+
+    volumes:
+      # Persistir dados
+      - ../../data:/app/data
+      - ../../logs:/app/logs
+      - ../../models:/app/data/models
+
+    environment:
+      # Modo de trading
+      - TRADING_MODE=${TRADING_MODE:-paper}
+
+      # Telegram (notificações)
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+
+      # Exchange (apenas para live)
+      - EXCHANGE_API_KEY=${EXCHANGE_API_KEY:-}
+      - EXCHANGE_SECRET=${EXCHANGE_SECRET:-}
+
+      # Cloudflare (se quiser usar como backend mesmo local)
+      - CF_ACCOUNT_ID=${CF_ACCOUNT_ID:-}
+      - CF_API_TOKEN=${CF_API_TOKEN:-}
+      - CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID:-}
+      - CF_D1_DATABASE_ID=${CF_D1_DATABASE_ID:-}
+
+    # Não executa continuamente - é acionado pelo scheduler
+    command: ["python", "deploy/selfhosted/run_daemon.py"]
+
+  # Scheduler para executar a cada 4 horas
+  scheduler:
+    image: mcuadros/ofelia:latest
+    container_name: trading-scheduler
+    profiles: ["scheduler"]
+    restart: unless-stopped
+
+    depends_on:
+      - trading-bot
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    environment:
+      # Job a cada 4 horas
+      - "OFELIA_JOB_EXEC_TRADING=0 */4 * * *"
+
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.trading-bot.schedule: "0 */4 * * *"
+      ofelia.job-exec.trading-bot.container: "trading-bot"
+      ofelia.job-exec.trading-bot.command: "python deploy/selfhosted/run_daemon.py"
+
+# Rede
+networks:
+  default:
+    name: trading-network
