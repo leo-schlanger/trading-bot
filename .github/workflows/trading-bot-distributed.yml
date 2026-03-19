@@ -59,27 +59,36 @@ jobs:
           import requests
           import json
 
-          account_id = os.environ['CF_ACCOUNT_ID']
-          api_token = os.environ['CF_API_TOKEN']
-          namespace_id = os.environ['CF_KV_NAMESPACE_ID']
+          account_id = os.environ.get('CF_ACCOUNT_ID', '')
+          api_token = os.environ.get('CF_API_TOKEN', '')
+          namespace_id = os.environ.get('CF_KV_NAMESPACE_ID', '')
 
           if not all([account_id, api_token, namespace_id]):
               print('Cloudflare not configured, using local state')
               exit(0)
 
-          url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/state:bot'
+          # KV API retorna o valor como texto puro
+          url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/trading_state'
           headers = {'Authorization': f'Bearer {api_token}'}
 
           try:
               response = requests.get(url, headers=headers)
+              print(f'KV GET status: {response.status_code}')
+
               if response.status_code == 200:
-                  state = response.json()
+                  # KV retorna texto puro, precisamos parsear como JSON
+                  state_text = response.text
+                  state = json.loads(state_text)
                   os.makedirs('state', exist_ok=True)
                   with open('state/trading_state.json', 'w') as f:
                       json.dump(state, f, indent=2)
-                  print('State loaded from Cloudflare KV')
+                  print(f'State loaded from Cloudflare KV (capital: \${state.get(\"capital\", \"?\")})')
+              elif response.status_code == 404:
+                  print('No existing state in KV (first run)')
               else:
-                  print(f'No existing state (status: {response.status_code})')
+                  print(f'KV error: {response.status_code} - {response.text[:200]}')
+          except json.JSONDecodeError as e:
+              print(f'Invalid JSON in KV: {e}')
           except Exception as e:
               print(f'Error loading state: {e}')
           "
@@ -164,30 +173,39 @@ jobs:
           namespace_id = os.environ.get('CF_KV_NAMESPACE_ID', '')
 
           if not all([account_id, api_token, namespace_id]):
-              print('Cloudflare not configured')
+              print('Cloudflare not configured, state saved locally only')
               exit(0)
 
           # Ler estado local
           state_file = 'state/trading_state.json'
           if not os.path.exists(state_file):
-              print('No state to save')
+              print('No state file to save')
               exit(0)
 
           with open(state_file, 'r') as f:
               state = json.load(f)
 
-          # Salvar no KV
-          url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/state:bot'
+          # Salvar no KV - o valor é enviado como texto no body
+          url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values/trading_state'
           headers = {
               'Authorization': f'Bearer {api_token}',
-              'Content-Type': 'application/json'
+              'Content-Type': 'text/plain'
           }
 
-          response = requests.put(url, headers=headers, data=json.dumps(state))
+          # Converter state para JSON string
+          state_json = json.dumps(state)
+
+          response = requests.put(url, headers=headers, data=state_json)
+          print(f'KV PUT status: {response.status_code}')
+
           if response.status_code == 200:
-              print('State saved to Cloudflare KV')
+              result = response.json()
+              if result.get('success'):
+                  print(f'State saved to Cloudflare KV (capital: \${state.get(\"capital\", \"?\")}, trades: {state.get(\"total_trades\", 0)})')
+              else:
+                  print(f'KV save failed: {result.get(\"errors\", [])}')
           else:
-              print(f'Error saving state: {response.status_code}')
+              print(f'KV error: {response.status_code} - {response.text[:200]}')
           "
 
       # ===== UPLOAD DE LOGS =====
