@@ -1,14 +1,68 @@
-# Intelligent Trading Bot
+# Intelligent Trading Bot for Drift Protocol
 
-Bot de trading automatizado com Machine Learning para detecção de regimes de mercado e seleção dinâmica de estratégias.
+Bot de trading automatizado com Machine Learning para detecção de regimes de mercado, seleção dinâmica de estratégias e detecção de armadilhas de mercado.
+
+**Target:** Drift Protocol (Solana Perpetuals DEX)
+**Capital:** $500 USD
+**Timeframe:** 4h
+**Mode:** Paper Trading (Live ready)
 
 ## Features
 
 - **Detecção de Regime**: Classifica mercado em Bull/Bear/Sideways/Correction usando HMM + regras
 - **Seleção de Estratégia**: XGBoost escolhe a melhor estratégia para o regime atual
+- **Detecção de Armadilhas**: Sistema adaptativo detecta bull traps, bear traps, fake breakouts, divergências
+- **Sinais LONG/SHORT**: Opera em ambas as direções conforme o regime
 - **Gestão de Risco**: Position sizing com Kelly Criterion e limites por regime
 - **Circuit Breakers**: Proteções automáticas (max drawdown, consecutive losses, etc)
 - **Notificações**: Alertas via Telegram
+- **Multi-Deploy**: GitHub Actions, Docker, Raspberry Pi, Oracle Cloud
+
+## Quick Start
+
+```bash
+# Clone
+git clone https://github.com/leo-schlanger/trading-bot.git
+cd trading-bot
+
+# Dependencies
+pip install -r requirements.txt
+
+# Download data
+python scripts/download_recent_data.py --symbol BTC --bars 500
+python scripts/download_recent_data.py --symbol ETH --bars 500
+
+# Run paper trading
+python run_trading_cycle.py --mode paper --symbols BTC ETH
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    TRADING CYCLE (4h)                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. Download Data (Pyth Network / Drift API)               │
+│              ↓                                              │
+│  2. Regime Detection (HMM + Rules)                         │
+│     → BULL / BEAR / SIDEWAYS / CORRECTION                  │
+│              ↓                                              │
+│  3. Signal Generation (Multi-indicator)                    │
+│     → EMA, MACD, RSI, Supertrend, ADX, Bollinger           │
+│              ↓                                              │
+│  4. Trap Detection (Adaptive)                              │
+│     → Bull trap, Bear trap, Fake breakout, Divergence      │
+│              ↓                                              │
+│  5. Risk Management                                        │
+│     → Position size, Stop loss, Take profit                │
+│              ↓                                              │
+│  6. Execute (Paper / Live)                                 │
+│              ↓                                              │
+│  7. Notify (Telegram)                                      │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Estratégias Disponíveis
 
@@ -23,81 +77,101 @@ Bot de trading automatizado com Machine Learning para detecção de regimes de m
 | Donchian Breakout | Breakout | Bull |
 | Momentum | Trend | Bull |
 
-## Setup
+## Trap Detection
 
-```bash
-# Clone
-git clone https://github.com/YOUR_USER/trading-bot.git
-cd trading-bot
+O sistema detecta automaticamente:
 
-# Virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
+| Armadilha | Descrição | Ação |
+|-----------|-----------|------|
+| Bull Trap | Falso rompimento de resistência | Evita LONG |
+| Bear Trap | Falso rompimento de suporte | Evita SHORT |
+| Fake Breakout | Rompimento sem volume | Evita entrada |
+| Bearish Divergence | Preço sobe, RSI cai | Evita LONG |
+| Bullish Divergence | Preço cai, RSI sobe | Evita SHORT |
+| Exhaustion | Volume extremo + reversão | Sinal de reversão |
+| Stop Hunt | Wick longo + reversão | Armadilha |
 
-# Dependencies
-pip install -r requirements.txt
+## Risk Management
 
-# Configuration
-cp config/.env.example config/.env
-# Edit .env with your settings
-```
+| Regime | Position Size | Stop (ATR) | Target (ATR) |
+|--------|--------------|------------|--------------|
+| Bull | 80% | 3.0x | 4.5x |
+| Bear | 50% | 2.0x | 3.0x |
+| Sideways | 60% | 1.5x | 2.0x |
+| Correction | 30% | 1.5x | 2.0x |
 
-## Estrutura
+## Safety Controls
+
+- **Max Consecutive Losses**: Pausa 24h após 3 losses seguidos
+- **Daily Loss Limit**: Para se perder 5% no dia ($25)
+- **Max Drawdown**: Para tudo se drawdown > 20% ($100)
+- **High Volatility**: Reduz posição 50% se ATR > 2x média
+- **Regime Change**: Pausa 2 candles após mudança de regime
+
+## Project Structure
 
 ```
 ├── src/
 │   ├── ml/                 # Machine Learning
-│   │   ├── regime_detector.py
-│   │   ├── strategy_selector.py
+│   │   ├── regime_detector.py    # HMM + Rules
+│   │   ├── strategy_selector.py  # XGBoost
 │   │   ├── features.py
 │   │   └── validation.py
+│   ├── signals/            # Signal Generation
+│   │   ├── regime_signals.py     # Multi-indicator signals
+│   │   └── trap_detector.py      # Trap detection
 │   ├── optimization/       # Risk Management
 │   │   ├── risk_manager.py
 │   │   └── param_optimizer.py
 │   ├── bot/               # Core Engine
 │   │   ├── intelligent_engine.py
 │   │   └── safety_controls.py
-│   ├── indicators/        # Technical Indicators
 │   ├── storage/           # Data Persistence
+│   │   ├── local.py       # SQLite + files
+│   │   └── cloudflare.py  # KV + D1 + R2
 │   └── notifications/     # Telegram
 ├── strategies/            # Trading Strategies
 ├── training/              # ML Training Pipeline
 ├── scripts/               # Utilities
 ├── config/                # Configuration
+├── deploy/                # Deployment Options
+│   ├── cloudflare/
+│   ├── selfhosted/
+│   ├── docker/
+│   └── oracle/
 └── .github/workflows/     # GitHub Actions
 ```
 
-## Usage
+## Deployment Options
 
-### Backtest
+| Option | Cost | Frequency | Best For |
+|--------|------|-----------|----------|
+| GitHub Actions | $0 | Every 4h | Paper trading |
+| Raspberry Pi | $50 once | Any | Self-hosted |
+| Docker | Varies | Any | Flexibility |
+| Oracle Cloud | $0 | Any | Free VPS |
 
-```bash
-python run_intelligent_bot.py --data data/raw/BTC_4h.csv --mode backtest
-```
-
-### Paper Trading
-
-```bash
-python run_trading_cycle.py --mode paper
-```
-
-### Train Models
-
-```bash
-# Generate features
-python training/generate_features.py --data data/raw/BTC_4h.csv --output data/processed
-
-# Train regime detector
-python training/train_regime_model.py --features data/processed/BTC_regime_features.parquet
-
-# Train strategy selector
-python training/train_selector_model.py --features data/processed/BTC_strategy_features.parquet
-```
+See [DEPLOY_GUIDE.md](DEPLOY_GUIDE.md) for detailed setup.
 
 ## Configuration
 
-Edit `config/bot_config.yaml`:
+### Environment Variables
+
+```bash
+# Trading mode
+TRADING_MODE=paper  # paper, live, backtest
+
+# Telegram notifications
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+
+# Cloudflare (optional)
+CF_ACCOUNT_ID=your_account_id
+CF_API_TOKEN=your_api_token
+CF_KV_NAMESPACE_ID=your_kv_id
+```
+
+### Bot Config (config/bot_config.yaml)
 
 ```yaml
 trading:
@@ -116,41 +190,32 @@ safety:
   pause_after_losses_hours: 24
 ```
 
-## Environment Variables
+## Data Sources
 
-```bash
-# Trading mode
-TRADING_MODE=paper  # paper, live, backtest
-
-# Telegram notifications
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
-
-# Exchange (for live mode)
-EXCHANGE_API_KEY=your_key
-EXCHANGE_SECRET=your_secret
-```
-
-## Risk Management
-
-| Regime | Position Size | Risk/Trade | Stop (ATR) |
-|--------|--------------|------------|------------|
-| Bull | 80% | 3% | 2.5x |
-| Bear | 50% | 2% | 2.0x |
-| Sideways | 60% | 2% | 1.5x |
-| Correction | 30% | 1% | 1.5x |
-
-## Safety Controls
-
-- **Max Consecutive Losses**: Pausa após 3 losses seguidos
-- **Daily Loss Limit**: Para se perder 5% no dia
-- **Max Drawdown**: Para tudo se drawdown > 20%
-- **High Volatility**: Reduz posição 50% se ATR > 2x média
+| Source | Priority | Type |
+|--------|----------|------|
+| Pyth Network | 1 | Oracle (Drift's source) |
+| Drift API | 2 | Direct from DEX |
+| Birdeye | 3 | Solana aggregator |
+| CryptoCompare | 4 | Fallback |
 
 ## Requirements
 
 - Python 3.11+
 - See `requirements.txt` for packages
+
+## Current Status
+
+- [x] Regime detection (rule-based)
+- [x] Signal generation (LONG/SHORT)
+- [x] Trap detection (adaptive)
+- [x] Risk management
+- [x] Safety controls
+- [x] GitHub Actions automation
+- [x] Paper trading
+- [ ] ML models trained
+- [ ] Live trading (Drift SDK)
+- [ ] Telegram notifications configured
 
 ## Disclaimer
 
