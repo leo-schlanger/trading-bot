@@ -1,8 +1,11 @@
 """
-Download recent market data for analysis.
-Used by GitHub Actions before each trading cycle.
+Download recent market data for Drift Protocol trading.
 
-Supports multiple data sources with automatic fallback.
+Data sources (in order of preference):
+1. Drift Historical Data API
+2. Pyth Network (Drift's oracle)
+3. Birdeye (Solana aggregator)
+4. CryptoCompare (fallback)
 """
 
 import argparse
@@ -14,93 +17,210 @@ import time
 import sys
 
 
-def download_binance_klines(symbol: str, interval: str = "4h", bars: int = 500):
-    """Download klines from Binance with fallback endpoints."""
+def download_drift_data(symbol: str, interval: str = "4h", bars: int = 500):
+    """Download historical data from Drift's API."""
 
-    symbol_pair = symbol.upper() + "USDT"
+    print(f"Trying Drift API for {symbol}...")
 
-    # Try multiple endpoints (some are blocked in certain regions)
-    endpoints = [
-        "https://data-api.binance.vision/api/v3/klines",  # Data API (less restricted)
-        "https://api.binance.com/api/v3/klines",          # Main API
-        "https://api1.binance.com/api/v3/klines",         # Mirror 1
-        "https://api2.binance.com/api/v3/klines",         # Mirror 2
-    ]
+    # Drift market indices
+    market_map = {
+        "BTC": 0,   # BTC-PERP
+        "ETH": 1,   # ETH-PERP
+        "SOL": 2,   # SOL-PERP
+    }
 
-    # Calculate timestamps
-    end_time = int(datetime.now().timestamp() * 1000)
+    market_index = market_map.get(symbol.upper())
+    if market_index is None:
+        print(f"  Market {symbol} not found on Drift")
+        return None
+
+    # Drift historical data API
+    base_url = "https://mainnet-beta.api.drift.trade/trades"
+
+    # Calculate time range
     interval_hours = {'1h': 1, '4h': 4, '1d': 24}.get(interval, 4)
-    days_needed = (bars * interval_hours) / 24 + 1
-    start_time = int((datetime.now() - timedelta(days=days_needed)).timestamp() * 1000)
+    end_time = datetime.now()
+    start_time = end_time - timedelta(hours=bars * interval_hours)
 
-    all_klines = []
+    try:
+        params = {
+            "marketIndex": market_index,
+            "marketType": "perp",
+            "startTime": int(start_time.timestamp()),
+            "endTime": int(end_time.timestamp()),
+        }
 
-    for base_url in endpoints:
-        print(f"Trying {base_url.split('/')[2]}...")
-        all_klines = []
-        current_start = start_time
+        response = requests.get(base_url, params=params, timeout=30)
 
-        try:
-            while current_start < end_time and len(all_klines) < bars:
-                params = {
-                    "symbol": symbol_pair,
-                    "interval": interval,
-                    "startTime": current_start,
-                    "endTime": end_time,
-                    "limit": min(1000, bars - len(all_klines))
-                }
+        if response.status_code != 200:
+            print(f"  Drift API returned {response.status_code}")
+            return None
 
-                response = requests.get(base_url, params=params, timeout=30)
+        data = response.json()
 
-                if response.status_code == 451:
-                    print(f"  Blocked (451), trying next endpoint...")
-                    break
+        if not data or 'trades' not in data:
+            print("  No trade data from Drift")
+            return None
 
-                response.raise_for_status()
-                klines = response.json()
+        # Aggregate trades into OHLCV candles
+        trades_df = pd.DataFrame(data['trades'])
+        if trades_df.empty:
+            return None
 
-                if not klines:
-                    break
+        trades_df['timestamp'] = pd.to_datetime(trades_df['ts'], unit='s')
+        trades_df['price'] = trades_df['price'].astype(float) / 1e6  # Drift uses 6 decimals
+        trades_df['size'] = trades_df['baseAssetAmount'].astype(float) / 1e9
 
-                all_klines.extend(klines)
-                current_start = klines[-1][0] + 1
-                print(f"  Downloaded {len(all_klines)}/{bars} candles", end="\r")
-                time.sleep(0.1)
+        # Resample to candles
+        df = trades_df.set_index('timestamp').resample(interval).agg({
+            'price': ['first', 'max', 'min', 'last'],
+            'size': 'sum'
+        })
+        df.columns = ['open', 'high', 'low', 'close', 'volume']
+        df = df.dropna()
 
-            if len(all_klines) >= bars * 0.9:  # Got at least 90% of requested data
-                print(f"\n  Success with {base_url.split('/')[2]}")
-                break
+        if len(df) > 0:
+            print(f"  Got {len(df)} candles from Drift")
+            return save_data(df.tail(bars), symbol, interval)
 
-        except requests.exceptions.RequestException as e:
-            print(f"  Error: {e}")
-            continue
+    except Exception as e:
+        print(f"  Drift API error: {e}")
 
-    if not all_klines:
-        print(f"Failed to download {symbol} data from all endpoints")
-        # Try fallback to CryptoCompare
-        return download_cryptocompare(symbol, interval, bars)
+    return None
 
-    # Convert to DataFrame
-    df = pd.DataFrame(all_klines, columns=[
-        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-        'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-        'taker_buy_quote', 'ignore'
-    ])
 
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df = df.set_index('timestamp')
-    df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-    df = df.tail(bars)
+def download_pyth_data(symbol: str, interval: str = "4h", bars: int = 500):
+    """Download from Pyth Network (Drift's oracle source)."""
 
-    return save_data(df, symbol, interval)
+    print(f"Trying Pyth Network for {symbol}...")
+
+    # Pyth price feed IDs
+    pyth_feeds = {
+        "BTC": "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+        "ETH": "ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+        "SOL": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
+    }
+
+    feed_id = pyth_feeds.get(symbol.upper())
+    if not feed_id:
+        print(f"  No Pyth feed for {symbol}")
+        return None
+
+    # Pyth Benchmarks API (historical data)
+    base_url = f"https://benchmarks.pyth.network/v1/shims/tradingview/history"
+
+    interval_map = {'1h': '60', '4h': '240', '1d': 'D'}
+    tf = interval_map.get(interval, '240')
+
+    end_time = int(datetime.now().timestamp())
+    interval_hours = {'1h': 1, '4h': 4, '1d': 24}.get(interval, 4)
+    start_time = int((datetime.now() - timedelta(hours=bars * interval_hours)).timestamp())
+
+    try:
+        params = {
+            "symbol": f"Crypto.{symbol.upper()}/USD",
+            "resolution": tf,
+            "from": start_time,
+            "to": end_time,
+        }
+
+        response = requests.get(base_url, params=params, timeout=30)
+
+        if response.status_code != 200:
+            print(f"  Pyth returned {response.status_code}")
+            return None
+
+        data = response.json()
+
+        if data.get('s') != 'ok':
+            print(f"  Pyth error: {data.get('s')}")
+            return None
+
+        df = pd.DataFrame({
+            'timestamp': pd.to_datetime(data['t'], unit='s'),
+            'open': data['o'],
+            'high': data['h'],
+            'low': data['l'],
+            'close': data['c'],
+            'volume': data.get('v', [0] * len(data['t']))
+        })
+
+        df = df.set_index('timestamp')
+        df = df.astype(float)
+
+        print(f"  Got {len(df)} candles from Pyth")
+        return save_data(df.tail(bars), symbol, interval)
+
+    except Exception as e:
+        print(f"  Pyth error: {e}")
+
+    return None
+
+
+def download_birdeye_data(symbol: str, interval: str = "4h", bars: int = 500):
+    """Download from Birdeye (Solana data aggregator)."""
+
+    print(f"Trying Birdeye for {symbol}...")
+
+    # Token addresses on Solana
+    token_addresses = {
+        "BTC": "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",  # Wrapped BTC
+        "ETH": "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs",  # Wrapped ETH
+        "SOL": "So11111111111111111111111111111111111111112",    # Native SOL
+    }
+
+    address = token_addresses.get(symbol.upper())
+    if not address:
+        print(f"  No Birdeye address for {symbol}")
+        return None
+
+    base_url = f"https://public-api.birdeye.so/defi/ohlcv"
+
+    interval_map = {'1h': '1H', '4h': '4H', '1d': '1D'}
+    tf = interval_map.get(interval, '4H')
+
+    try:
+        headers = {"X-API-KEY": "public"}  # Public tier
+        params = {
+            "address": address,
+            "type": tf,
+            "time_from": int((datetime.now() - timedelta(days=bars//6)).timestamp()),
+            "time_to": int(datetime.now().timestamp()),
+        }
+
+        response = requests.get(base_url, headers=headers, params=params, timeout=30)
+
+        if response.status_code != 200:
+            print(f"  Birdeye returned {response.status_code}")
+            return None
+
+        data = response.json()
+        items = data.get('data', {}).get('items', [])
+
+        if not items:
+            print("  No data from Birdeye")
+            return None
+
+        df = pd.DataFrame(items)
+        df['timestamp'] = pd.to_datetime(df['unixTime'], unit='s')
+        df = df.set_index('timestamp')
+        df = df.rename(columns={'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
+        df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+
+        print(f"  Got {len(df)} candles from Birdeye")
+        return save_data(df.tail(bars), symbol, interval)
+
+    except Exception as e:
+        print(f"  Birdeye error: {e}")
+
+    return None
 
 
 def download_cryptocompare(symbol: str, interval: str = "4h", bars: int = 500):
-    """Fallback: Download from CryptoCompare API (free, no restrictions)."""
+    """Fallback: CryptoCompare (general crypto data)."""
 
     print(f"Fallback: Using CryptoCompare for {symbol}...")
 
-    # Map interval to CryptoCompare format
     interval_map = {
         '1h': ('histohour', 1),
         '4h': ('histohour', 4),
@@ -110,14 +230,14 @@ def download_cryptocompare(symbol: str, interval: str = "4h", bars: int = 500):
     endpoint, aggregate = interval_map.get(interval, ('histohour', 4))
     base_url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
 
-    params = {
-        "fsym": symbol.upper(),
-        "tsym": "USDT",
-        "limit": min(2000, bars),
-        "aggregate": aggregate,
-    }
-
     try:
+        params = {
+            "fsym": symbol.upper(),
+            "tsym": "USD",
+            "limit": min(2000, bars),
+            "aggregate": aggregate,
+        }
+
         response = requests.get(base_url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
@@ -129,29 +249,22 @@ def download_cryptocompare(symbol: str, interval: str = "4h", bars: int = 500):
         klines = data.get('Data', {}).get('Data', [])
 
         if not klines:
-            print("  No data from CryptoCompare")
             return None
 
         df = pd.DataFrame(klines)
         df['timestamp'] = pd.to_datetime(df['time'], unit='s')
         df = df.set_index('timestamp')
-        df = df.rename(columns={
-            'open': 'open',
-            'high': 'high',
-            'low': 'low',
-            'close': 'close',
-            'volumefrom': 'volume'
-        })
+        df = df.rename(columns={'volumefrom': 'volume'})
         df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-        df = df[df['volume'] > 0]  # Remove empty candles
-        df = df.tail(bars)
+        df = df[df['volume'] > 0]
 
         print(f"  Got {len(df)} candles from CryptoCompare")
-        return save_data(df, symbol, interval)
+        return save_data(df.tail(bars), symbol, interval)
 
     except Exception as e:
         print(f"  CryptoCompare error: {e}")
-        return None
+
+    return None
 
 
 def save_data(df: pd.DataFrame, symbol: str, interval: str):
@@ -173,18 +286,37 @@ def save_data(df: pd.DataFrame, symbol: str, interval: str):
     return df
 
 
+def download_data(symbol: str, interval: str = "4h", bars: int = 500):
+    """Try all data sources in order of preference."""
+
+    # Try sources in order
+    sources = [
+        download_pyth_data,       # Pyth (Drift's oracle) - most accurate
+        download_drift_data,      # Drift direct
+        download_birdeye_data,    # Birdeye (Solana aggregator)
+        download_cryptocompare,   # Fallback
+    ]
+
+    for source in sources:
+        result = source(symbol, interval, bars)
+        if result is not None and len(result) >= bars * 0.5:
+            return result
+
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", default="BTC", help="Symbol (BTC, ETH)")
+    parser.add_argument("--symbol", default="BTC", help="Symbol (BTC, ETH, SOL)")
     parser.add_argument("--timeframe", default="4h", help="Timeframe")
     parser.add_argument("--bars", type=int, default=500, help="Number of candles")
 
     args = parser.parse_args()
 
-    result = download_binance_klines(args.symbol, args.timeframe, args.bars)
+    result = download_data(args.symbol, args.timeframe, args.bars)
 
     if result is None:
-        print(f"WARNING: Could not download data for {args.symbol}")
+        print(f"ERROR: Could not download data for {args.symbol}")
         sys.exit(1)
 
 
