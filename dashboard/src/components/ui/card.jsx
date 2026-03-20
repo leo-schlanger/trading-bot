@@ -1,10 +1,12 @@
 import { cn } from "@/lib/utils"
 
-export function Card({ className, ...props }) {
+export function Card({ className, variant = "default", ...props }) {
   return (
     <div
       className={cn(
-        "rounded-xl border bg-card text-card-foreground shadow",
+        "rounded-xl border bg-card text-card-foreground shadow-sm transition-all duration-200",
+        variant === "glass" && "bg-card/80 backdrop-blur-xl border-border/50",
+        variant === "gradient" && "bg-gradient-to-br from-card to-card/80 border-border/50",
         className
       )}
       {...props}
@@ -24,7 +26,7 @@ export function CardHeader({ className, ...props }) {
 export function CardTitle({ className, ...props }) {
   return (
     <h3
-      className={cn("font-semibold leading-none tracking-tight", className)}
+      className={cn("font-semibold leading-none tracking-tight text-foreground", className)}
       {...props}
     />
   )
