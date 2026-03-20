@@ -1,6 +1,6 @@
 # Project Status
 
-> Last updated: 2026-03-19 17:30 UTC
+> Last updated: 2026-03-20 09:40 UTC
 
 ## Overview
 
@@ -41,9 +41,10 @@
 |-----------|--------|-------|
 | GitHub Actions | ✅ Active | Runs every 4h |
 | Cloudflare Secrets | ✅ Configured | All 6 secrets set |
-| Cloudflare KV | ⚠️ Issues | Not persisting state |
+| Cloudflare KV | ✅ Working | Saves state, trades, decisions |
 | Cloudflare D1 | ⏸️ Unused | Ready but inactive |
 | Cloudflare R2 | ⏸️ Empty | No models uploaded |
+| Cloudflare Pages | ✅ Live | Dashboard at bot.leoschlanger.com |
 | Local Storage | ✅ Working | `state/trading_state.json` |
 
 ### Notifications
@@ -91,7 +92,9 @@ All SHORT on ETH in BEAR regime:
 ## Pending Tasks
 
 ### Immediate
-- [ ] Fix Cloudflare KV state persistence
+- [x] Fix Cloudflare KV state persistence
+- [x] Deploy Dashboard to Cloudflare Pages
+- [x] Configure custom domain bot.leoschlanger.com
 - [ ] Configure Telegram notifications
 
 ### Short-term
@@ -150,4 +153,5 @@ Based on current detection:
 2. All core systems working with rule-based fallbacks
 3. ML would improve performance but not required
 4. Live trading requires Drift SDK integration
-5. Cloudflare infrastructure ready but has persistence issues
+5. Cloudflare KV now working correctly
+6. Dashboard ready for deployment at bot.leoschlanger.com

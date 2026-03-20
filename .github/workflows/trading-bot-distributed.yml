@@ -202,6 +202,22 @@ jobs:
               result = response.json()
               if result.get('success'):
                   print(f'State saved to Cloudflare KV (capital: \${state.get(\"capital\", \"?\")}, trades: {state.get(\"total_trades\", 0)})')
+
+                  # Salvar dados extras para o dashboard
+                  base_url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values'
+
+                  # Trade history
+                  if 'paper_trades' in state:
+                      trades_json = json.dumps(state['paper_trades'])
+                      resp = requests.put(f'{base_url}/trade_history', headers=headers, data=trades_json)
+                      print(f'Trade history saved: {resp.status_code}')
+
+                  # Decision log
+                  if 'decision_log' in state:
+                      decisions_json = json.dumps(state['decision_log'])
+                      resp = requests.put(f'{base_url}/decision_log', headers=headers, data=decisions_json)
+                      print(f'Decision log saved: {resp.status_code}')
+
               else:
                   print(f'KV save failed: {result.get(\"errors\", [])}')
           else:

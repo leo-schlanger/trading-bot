@@ -16,6 +16,7 @@ Bot de trading automatizado com Machine Learning para detecção de regimes de m
 - **Gestão de Risco**: Position sizing com Kelly Criterion e limites por regime
 - **Circuit Breakers**: Proteções automáticas (max drawdown, consecutive losses, etc)
 - **Notificações**: Alertas via Telegram
+- **Dashboard**: Real-time web dashboard with authentication (Cloudflare Pages)
 - **Multi-Deploy**: GitHub Actions, Docker, Raspberry Pi, Oracle Cloud
 
 ## Quick Start
@@ -204,6 +205,22 @@ safety:
 - Python 3.11+
 - See `requirements.txt` for packages
 
+## Dashboard
+
+Web dashboard for real-time monitoring at `bot.leoschlanger.com`:
+
+- **Stack**: React + Vite + Tailwind + shadcn/ui
+- **Auth**: Password protected (SHA-256 hash)
+- **Features**:
+  - Real-time capital and PnL tracking
+  - Current regime and signals per asset
+  - Trade history with full details
+  - Decision log with reasoning
+  - Trap detection warnings
+  - Performance metrics
+
+See `dashboard/DEPLOY.md` for deployment instructions.
+
 ## Current Status
 
 - [x] Regime detection (rule-based)
@@ -213,6 +230,8 @@ safety:
 - [x] Safety controls
 - [x] GitHub Actions automation
 - [x] Paper trading
+- [x] Web dashboard
+- [x] Cloudflare KV persistence
 - [ ] ML models trained
 - [ ] Live trading (Drift SDK)
 - [ ] Telegram notifications configured

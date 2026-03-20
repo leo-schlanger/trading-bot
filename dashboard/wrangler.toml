@@ -1,0 +1,19 @@
+# Cloudflare Pages Configuration
+# Deploy with: npx wrangler pages deploy dist --project-name=trading-dashboard
+
+name = "trading-dashboard"
+compatibility_date = "2024-01-01"
+pages_build_output_dir = "dist"
+
+# KV Namespace bindings - same as the trading bot
+[[kv_namespaces]]
+binding = "TRADING_KV"
+id = "0c8a64dfef794b0aa4e90ed7f64f36ee"
+
+# Environment variables (set in Cloudflare Dashboard)
+# AUTH_PASSWORD_HASH - SHA-256 hash of password "041196"
+# Hash: 8848feae3bf358fe9c769fb73027680a72ed0c46ff999ca8b736af46ceedb049
+
+[vars]
+# Non-sensitive variables go here
+APP_NAME = "Trading Bot Dashboard"

@@ -98,7 +98,10 @@ class TradingCycle:
             'last_regime': None,
             'consecutive_losses': 0,
             'total_trades': 0,
-            'total_pnl': 0.0
+            'total_pnl': 0.0,
+            'decision_log': [],
+            'last_signals': {},
+            'paper_trades': []
         }
 
     def _save_state(self):
@@ -218,6 +221,8 @@ class TradingCycle:
         result['details']['signal_confidence'] = trade_signal.confidence
         result['details']['signal_reasons'] = trade_signal.reasons
         result['details']['signal_strategy'] = trade_signal.strategy
+        result['details']['traps_detected'] = trade_signal.traps_detected
+        result['details']['trap_warning'] = trade_signal.trap_warning
 
         if trade_signal.direction == SignalDirection.LONG:
             result['signal'] = 1
@@ -332,6 +337,40 @@ class TradingCycle:
         self.state['paper_trades'].append(trade)
         self.state['total_trades'] = len(self.state['paper_trades'])
 
+    def _log_decision(self, analysis: Dict[str, Any]):
+        """Registra decisão para o dashboard."""
+        details = analysis.get('details', {})
+
+        decision = {
+            'timestamp': analysis['timestamp'],
+            'symbol': analysis['symbol'],
+            'action': analysis['action'],
+            'regime': analysis['regime'],
+            'confidence': details.get('signal_confidence', 0),
+            'strength': details.get('signal_strength', 'N/A'),
+            'reasons': details.get('signal_reasons', []),
+            'strategy': analysis.get('strategy'),
+            'price': details.get('price'),
+            'stop_loss': details.get('stop_loss'),
+            'take_profit': details.get('take_profit'),
+            'traps_detected': details.get('traps_detected', []),
+            'trap_warning': details.get('trap_warning', False)
+        }
+
+        # Adicionar ao log de decisões
+        if 'decision_log' not in self.state:
+            self.state['decision_log'] = []
+        self.state['decision_log'].append(decision)
+
+        # Manter apenas últimas 100 decisões
+        if len(self.state['decision_log']) > 100:
+            self.state['decision_log'] = self.state['decision_log'][-100:]
+
+        # Salvar última decisão por símbolo
+        if 'last_signals' not in self.state:
+            self.state['last_signals'] = {}
+        self.state['last_signals'][analysis['symbol']] = decision
+
     def send_notification(self, analysis: Dict[str, Any], execution: Dict[str, Any]):
         """Envia notificação via Telegram."""
         try:
@@ -389,6 +428,9 @@ class TradingCycle:
             # Executar
             execution = self.execute(analysis)
 
+            # Registrar decisão para dashboard
+            self._log_decision(analysis)
+
             # Notificar (apenas para sinais ativos: LONG, SHORT, BLOCKED)
             if analysis['action'] in ['LONG', 'SHORT', 'BLOCKED']:
                 self.send_notification(analysis, execution)
@@ -406,6 +448,13 @@ class TradingCycle:
             'peak': self.risk_manager.state.peak_capital,
             'consecutive_losses': self.risk_manager.state.consecutive_losses
         }
+
+        # Salvar último regime de cada símbolo analisado
+        for r in results:
+            if r['analysis'].get('regime'):
+                self.state['last_regime'] = r['analysis']['regime']
+                break
+
         self._save_state()
 
         # Resumo

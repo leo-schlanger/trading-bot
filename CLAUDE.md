@@ -1,7 +1,7 @@
 # Claude Context - Intelligent Trading Bot
 
 > This file provides context for Claude AI sessions working on this project.
-> Last updated: 2026-03-19
+> Last updated: 2026-03-20 (Session 3)
 
 ## Project Overview
 
@@ -117,21 +117,25 @@ Detects and filters:
 **Current:** GitHub Actions (every 4h UTC: 0,4,8,12,16,20)
 **Workflow:** `.github/workflows/trading-bot-distributed.yml`
 
-### Cloudflare (Configured but issues)
-- KV: State storage (not persisting correctly)
+### Cloudflare
+- KV: State storage (working - saves trading_state, trade_history, decision_log)
 - D1: Trade history (not used)
 - R2: ML models (empty)
+- Pages: Dashboard (bot.leoschlanger.com)
 - Secrets: All configured in GitHub
 
-### Alternative: Local State
-Currently using `state/trading_state.json` + GitHub artifacts
+### Dashboard
+- URL: bot.leoschlanger.com (Cloudflare Pages)
+- Password: 041196 (SHA-256 hash in AUTH_PASSWORD_HASH)
+- Stack: React + Vite + Tailwind + shadcn/ui
+- Location: `dashboard/`
+- Deploy: See `dashboard/DEPLOY.md`
 
 ## Pending Tasks
 
 ### High Priority
-1. **Fix Cloudflare KV persistence** - State not saving between runs
-2. **Train ML models** - HMM + XGBoost not trained
-3. **Integrate Drift SDK** - For live trading
+1. **Train ML models** - HMM + XGBoost not trained
+2. **Integrate Drift SDK** - For live trading
 
 ### Medium Priority
 4. Configure Telegram notifications
@@ -179,20 +183,34 @@ python training/train_regime_model.py --features data/processed/BTC_regime_featu
 3. Add to `STRATEGY_NAMES` dict
 4. Update `STRATEGY_REGIME_AFFINITY`
 
-## Recent Changes (Last Session)
+## Recent Changes (Session 3)
+
+1. Deployed Dashboard to Cloudflare Pages (bot.leoschlanger.com)
+2. Configured KV binding for production environment
+3. Fixed `_load_state()` - added decision_log, last_signals, paper_trades initialization
+4. Synced state with KV including decision_log and last_signals
+5. Full project checkup completed
+
+## Session 2
+
+1. Fixed Cloudflare KV persistence (json.loads for read, text/plain for write)
+2. Created Dashboard in `dashboard/` - React + shadcn/ui for Cloudflare Pages
+3. Added decision_log and last_signals to trading state
+4. Workflow now saves trade_history and decision_log to KV
+5. Updated `run_trading_cycle.py` with `_log_decision()` method
+
+## Session 1
 
 1. Created `src/signals/trap_detector.py` - Adaptive trap detection
 2. Integrated trap detection into `RegimeSignalGenerator`
 3. Updated signal output to include trap warnings
 4. Fixed duplicate workflow issue
-5. Confirmed Cloudflare secrets configured but KV not persisting
 
 ## Known Issues
 
-1. **Cloudflare KV not saving state** - Falls back to local
-2. **ML models not trained** - Using rule-based fallback
-3. **Live trading not implemented** - Drift SDK integration pending
-4. **Warning messages** - `hmmlearn` and `xgboost` not installed by default
+1. **ML models not trained** - Using rule-based fallback (works fine)
+2. **Live trading not implemented** - Drift SDK integration pending
+3. **Warning messages** - `hmmlearn` and `xgboost` not installed by default (optional)
 
 ## Testing Commands
 
