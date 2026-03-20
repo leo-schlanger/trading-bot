@@ -217,7 +217,7 @@ def download_birdeye_data(symbol: str, interval: str = "4h", bars: int = 500):
 
 
 def download_cryptocompare(symbol: str, interval: str = "4h", bars: int = 500):
-    """Fallback: CryptoCompare (general crypto data)."""
+    """Fallback: CryptoCompare (general crypto data). Supports batched downloads for large requests."""
 
     print(f"Fallback: Using CryptoCompare for {symbol}...")
 
@@ -230,33 +230,57 @@ def download_cryptocompare(symbol: str, interval: str = "4h", bars: int = 500):
     endpoint, aggregate = interval_map.get(interval, ('histohour', 4))
     base_url = f"https://min-api.cryptocompare.com/data/v2/{endpoint}"
 
+    all_data = []
+    remaining = bars
+    to_ts = None  # Start from now, go backwards
+
     try:
-        params = {
-            "fsym": symbol.upper(),
-            "tsym": "USD",
-            "limit": min(2000, bars),
-            "aggregate": aggregate,
-        }
+        while remaining > 0:
+            batch_size = min(2000, remaining)
+            params = {
+                "fsym": symbol.upper(),
+                "tsym": "USD",
+                "limit": batch_size,
+                "aggregate": aggregate,
+            }
+            if to_ts:
+                params["toTs"] = to_ts
 
-        response = requests.get(base_url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
+            response = requests.get(base_url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
 
-        if data.get('Response') == 'Error':
-            print(f"  CryptoCompare error: {data.get('Message')}")
+            if data.get('Response') == 'Error':
+                print(f"  CryptoCompare error: {data.get('Message')}")
+                break
+
+            klines = data.get('Data', {}).get('Data', [])
+            if not klines:
+                break
+
+            all_data = klines + all_data  # Prepend older data
+            remaining -= len(klines)
+
+            # Get oldest timestamp for next batch
+            to_ts = klines[0]['time'] - 1
+
+            if remaining > 0:
+                print(f"  Downloaded {bars - remaining}/{bars} candles...")
+                time.sleep(0.5)  # Rate limit
+
+        if not all_data:
             return None
 
-        klines = data.get('Data', {}).get('Data', [])
-
-        if not klines:
-            return None
-
-        df = pd.DataFrame(klines)
+        # Save partial data even if we didn't get everything
+        print(f"  Total collected: {len(all_data)} candles")
+        df = pd.DataFrame(all_data)
         df['timestamp'] = pd.to_datetime(df['time'], unit='s')
         df = df.set_index('timestamp')
         df = df.rename(columns={'volumefrom': 'volume'})
         df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
         df = df[df['volume'] > 0]
+        df = df.drop_duplicates()
+        df = df.sort_index()
 
         print(f"  Got {len(df)} candles from CryptoCompare")
         return save_data(df.tail(bars), symbol, interval)

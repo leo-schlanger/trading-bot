@@ -224,26 +224,28 @@ class RegimeDetector:
             self.is_trained = False
 
     def _prepare_hmm_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Prepare features for HMM."""
+        """Prepare features for HMM - must match training features."""
         close = df['close']
         high = df['high']
         low = df['low']
 
         features = pd.DataFrame(index=df.index)
 
-        # Returns (normalized)
-        features['returns'] = close.pct_change()
-
-        # Volatility (normalized)
-        atr_val = atr(high, low, close, 14)
-        features['volatility'] = atr_val / close
-
-        # Trend indicator
+        # Same features as training: price_vs_ma200, adx, roc_20, atr_pct, drawdown
         ma200 = sma(close, 200)
-        features['trend'] = (close - ma200) / ma200
+        features['price_vs_ma200'] = (close - ma200) / ma200
 
-        # Momentum
-        features['momentum'] = roc(close, 10) / 100  # Normalize
+        adx_line, _, _ = adx(high, low, close, 14)
+        features['adx'] = adx_line / 100  # Normalize to 0-1
+
+        features['roc_20'] = roc(close, 20) / 100  # Normalize
+
+        atr_val = atr(high, low, close, 14)
+        features['atr_pct'] = atr_val / close
+
+        # Drawdown from rolling max
+        rolling_max = close.rolling(window=50, min_periods=1).max()
+        features['drawdown'] = (close - rolling_max) / rolling_max
 
         return features
 

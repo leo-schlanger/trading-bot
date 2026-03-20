@@ -1,7 +1,7 @@
 # Claude Context - Intelligent Trading Bot
 
 > This file provides context for Claude AI sessions working on this project.
-> Last updated: 2026-03-20 (Session 3)
+> Last updated: 2026-03-20 (Session 4)
 
 ## Project Overview
 
@@ -25,8 +25,8 @@ Data (Pyth) → Regime Detection → Signal Generation → Trap Filter → Risk 
 
 | Component | File | Status |
 |-----------|------|--------|
-| Regime Detector | `src/ml/regime_detector.py` | ✅ Working (rule-based) |
-| Strategy Selector | `src/ml/strategy_selector.py` | ⚠️ Fallback (XGBoost not trained) |
+| Regime Detector | `src/ml/regime_detector.py` | ✅ Working (HMM trained) |
+| Strategy Selector | `src/ml/strategy_selector.py` | ✅ Working (XGBoost trained) |
 | Signal Generator | `src/signals/regime_signals.py` | ✅ Working |
 | Trap Detector | `src/signals/trap_detector.py` | ✅ Working |
 | Risk Manager | `src/optimization/risk_manager.py` | ✅ Working |
@@ -52,11 +52,12 @@ Data (Pyth) → Regime Detection → Signal Generation → Trap Filter → Risk 
 - `config/.env.example` - Environment template
 - `.github/workflows/trading-bot-distributed.yml` - Active workflow
 
-### ML (Not Yet Trained)
-- `training/generate_features.py`
-- `training/train_regime_model.py`
-- `training/train_selector_model.py`
-- `models/` - Empty (models go here after training)
+### ML (Trained)
+- `training/generate_features.py` - Feature generation
+- `training/train_regime_model.py` - HMM training
+- `training/train_selector_model.py` - XGBoost training
+- `models/regime_hmm.pkl` - HMM regime detector (4 states, 6000 samples)
+- `models/strategy_xgb.pkl` - XGBoost strategy selector (98.9% accuracy)
 
 ## Regime System
 
@@ -134,13 +135,13 @@ Detects and filters:
 ## Pending Tasks
 
 ### High Priority
-1. **Train ML models** - HMM + XGBoost not trained
+1. ~~**Train ML models**~~ - ✅ Done (HMM + XGBoost)
 2. **Integrate Drift SDK** - For live trading
 
 ### Medium Priority
-4. Configure Telegram notifications
-5. Add unit tests
-6. Implement incremental ML training (not full retrain)
+3. Configure Telegram notifications
+4. Add unit tests
+5. Implement incremental ML training (append new data, retrain)
 
 ### Low Priority
 7. Add more data sources
@@ -160,8 +161,9 @@ python run_trading_cycle.py --mode paper --symbols BTC ETH
 python run_intelligent_bot.py --data data/raw/BTC_4h.csv --mode backtest
 
 # Train models (requires hmmlearn, xgboost)
-python training/generate_features.py --data data/raw/BTC_4h.csv --output data/processed
-python training/train_regime_model.py --features data/processed/BTC_regime_features.parquet
+python training/generate_features.py --data data/raw/BTC_4h.csv --output data/processed --asset BTC --type regime
+python training/train_regime_model.py --features data/processed/BTC_regime_features.parquet --labels data/processed/BTC_regime_labels.parquet --output models/regime_hmm.pkl --validate
+python training/train_selector_model.py --features data/processed/BTC_strategy_features.parquet --output models/strategy_xgb.pkl --validate --importance
 ```
 
 ## Code Patterns
@@ -183,7 +185,17 @@ python training/train_regime_model.py --features data/processed/BTC_regime_featu
 3. Add to `STRATEGY_NAMES` dict
 4. Update `STRATEGY_REGIME_AFFINITY`
 
-## Recent Changes (Session 3)
+## Recent Changes (Session 4)
+
+1. Fixed HMM feature mismatch bug in `regime_detector.py` - now uses same 5 features for training and inference
+2. Downloaded 6000 candles (~2.7 years) historical data for BTC and ETH (4h timeframe)
+3. Trained HMM regime detector (4 states, walk-forward validated)
+4. Generated regime features (7 features) and strategy features (104 features)
+5. Trained XGBoost strategy selector (98.9% accuracy, 27 walk-forward folds)
+6. Saved models to `models/regime_hmm.pkl` and `models/strategy_xgb.pkl`
+7. Saved API tokens to `config/.env.local` (not in git)
+
+## Session 3
 
 1. Deployed Dashboard to Cloudflare Pages (bot.leoschlanger.com)
 2. Configured KV binding for production environment
@@ -208,9 +220,9 @@ python training/train_regime_model.py --features data/processed/BTC_regime_featu
 
 ## Known Issues
 
-1. **ML models not trained** - Using rule-based fallback (works fine)
+1. ~~**ML models not trained**~~ - ✅ Fixed (HMM + XGBoost trained)
 2. **Live trading not implemented** - Drift SDK integration pending
-3. **Warning messages** - `hmmlearn` and `xgboost` not installed by default (optional)
+3. **Warning messages** - `hmmlearn` and `xgboost` required for ML (pip install hmmlearn xgboost)
 
 ## Testing Commands
 
