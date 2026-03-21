@@ -1,7 +1,7 @@
 # Claude Context - Intelligent Trading Bot
 
 > This file provides context for Claude AI sessions working on this project.
-> Last updated: 2026-03-20 (Session 4)
+> Last updated: 2026-03-21 (Session 5)
 
 ## Project Overview
 
@@ -37,8 +37,28 @@ Data (Pyth) → Regime Detection → Signal Generation → Trap Filter → Risk 
 
 1. **Download Data**: `scripts/download_recent_data.py` → Pyth Network API
 2. **Analyze**: `run_trading_cycle.py` → regime + signals + traps
-3. **Execute**: Paper mode logs trades, Live mode (TODO) sends to Drift
-4. **Persist**: State saved to `state/trading_state.json`
+3. **Check Positions**: Verify SL/TP for open positions using candle high/low
+4. **Execute**: Paper mode tracks positions with P&L, Live mode (TODO) sends to Drift
+5. **Persist**: State saved to `state/trading_state.json` and Cloudflare KV
+
+### Paper Trading System
+
+The paper trading system tracks positions with full lifecycle management:
+
+```
+Signal → Open Position → Monitor SL/TP → Close Position → Calculate P&L → Update Capital
+```
+
+**State Structure:**
+- `positions`: Dict of open positions (symbol → position data)
+- `trade_history`: List of closed trades with P&L
+- `capital`: Current capital (updated on position close)
+- `total_pnl`: Cumulative profit/loss
+
+**Position Tracking:**
+- Entry price, size, stop loss, take profit
+- Each cycle checks if SL/TP hit using candle high/low
+- P&L calculated on close: `(exit - entry) * size` for LONG, inverted for SHORT
 
 ## Important Files
 
@@ -119,9 +139,9 @@ Detects and filters:
 **Workflow:** `.github/workflows/trading-bot-distributed.yml`
 
 ### Cloudflare
-- KV: State storage (working - saves trading_state, trade_history, decision_log)
+- KV: State storage (saves trading_state, open_positions, trade_history, decision_log)
 - D1: Trade history (not used)
-- R2: ML models (empty)
+- R2: ML models (not used)
 - Pages: Dashboard (bot.leoschlanger.com)
 - Secrets: All configured in GitHub
 
@@ -185,7 +205,18 @@ python training/train_selector_model.py --features data/processed/BTC_strategy_f
 3. Add to `STRATEGY_NAMES` dict
 4. Update `STRATEGY_REGIME_AFFINITY`
 
-## Recent Changes (Session 4)
+## Recent Changes (Session 5)
+
+1. **Fixed paper trading** - Was only logging signals, not tracking positions or calculating P&L
+2. Added `PaperPosition` class in `run_trading_cycle.py` for position lifecycle management
+3. Implemented SL/TP checking using candle high/low each cycle
+4. Added P&L calculation and capital updates on position close
+5. Migrated state from `paper_trades` (list) to `positions` (dict with tracking)
+6. Updated workflow to sync `open_positions` to Cloudflare KV
+7. Updated dashboard API to return positions and portfolio summary
+8. Dashboard now shows open positions with entry/SL/TP and trade history with P&L
+
+## Session 4
 
 1. Fixed HMM feature mismatch bug in `regime_detector.py` - now uses same 5 features for training and inference
 2. Downloaded 6000 candles (~2.7 years) historical data for BTC and ETH (4h timeframe)
@@ -221,8 +252,9 @@ python training/train_selector_model.py --features data/processed/BTC_strategy_f
 ## Known Issues
 
 1. ~~**ML models not trained**~~ - ✅ Fixed (HMM + XGBoost trained)
-2. **Live trading not implemented** - Drift SDK integration pending
-3. **Warning messages** - `hmmlearn` and `xgboost` required for ML (pip install hmmlearn xgboost)
+2. ~~**Paper trading not tracking P&L**~~ - ✅ Fixed (full position lifecycle)
+3. **Live trading not implemented** - Drift SDK integration pending
+4. **Warning messages** - `hmmlearn` and `xgboost` required for ML (pip install hmmlearn xgboost)
 
 ## Testing Commands
 

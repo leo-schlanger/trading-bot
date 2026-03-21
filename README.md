@@ -16,6 +16,7 @@ Bot de trading automatizado com Machine Learning para detecção de regimes de m
 - **Gestão de Risco**: Position sizing com Kelly Criterion e limites por regime
 - **Circuit Breakers**: Proteções automáticas (max drawdown, consecutive losses, etc)
 - **Notificações**: Alertas via Telegram
+- **Paper Trading**: Full position lifecycle with P&L tracking
 - **Dashboard**: Real-time web dashboard with authentication (Cloudflare Pages)
 - **Multi-Deploy**: GitHub Actions, Docker, Raspberry Pi, Oracle Cloud
 
@@ -58,9 +59,11 @@ python run_trading_cycle.py --mode paper --symbols BTC ETH
 │  5. Risk Management                                        │
 │     → Position size, Stop loss, Take profit                │
 │              ↓                                              │
-│  6. Execute (Paper / Live)                                 │
+│  6. Check Open Positions (SL/TP)                           │
 │              ↓                                              │
-│  7. Notify (Telegram)                                      │
+│  7. Execute (Paper / Live)                                 │
+│              ↓                                              │
+│  8. Notify (Telegram)                                      │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -213,26 +216,27 @@ Web dashboard for real-time monitoring at `bot.leoschlanger.com`:
 - **Auth**: Password protected (SHA-256 hash)
 - **Features**:
   - Real-time capital and PnL tracking
+  - Open positions with entry/SL/TP
   - Current regime and signals per asset
-  - Trade history with full details
+  - Trade history with P&L per trade
   - Decision log with reasoning
   - Trap detection warnings
-  - Performance metrics
+  - Performance metrics (win rate, profit factor)
 
 See `dashboard/DEPLOY.md` for deployment instructions.
 
 ## Current Status
 
-- [x] Regime detection (rule-based)
+- [x] Regime detection (HMM + rules)
 - [x] Signal generation (LONG/SHORT)
 - [x] Trap detection (adaptive)
 - [x] Risk management
 - [x] Safety controls
 - [x] GitHub Actions automation
-- [x] Paper trading
+- [x] Paper trading with P&L tracking
 - [x] Web dashboard
 - [x] Cloudflare KV persistence
-- [ ] ML models trained
+- [x] ML models trained (HMM + XGBoost)
 - [ ] Live trading (Drift SDK)
 - [ ] Telegram notifications configured
 
