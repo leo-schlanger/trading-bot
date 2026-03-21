@@ -206,11 +206,17 @@ jobs:
                   # Salvar dados extras para o dashboard
                   base_url = f'https://api.cloudflare.com/client/v4/accounts/{account_id}/storage/kv/namespaces/{namespace_id}/values'
 
-                  # Trade history
-                  if 'paper_trades' in state:
-                      trades_json = json.dumps(state['paper_trades'])
+                  # Trade history (closed trades with P&L)
+                  if 'trade_history' in state:
+                      trades_json = json.dumps(state['trade_history'])
                       resp = requests.put(f'{base_url}/trade_history', headers=headers, data=trades_json)
-                      print(f'Trade history saved: {resp.status_code}')
+                      print(f'Trade history saved: {resp.status_code} ({len(state[\"trade_history\"])} trades)')
+
+                  # Open positions
+                  if 'positions' in state:
+                      positions_json = json.dumps(state['positions'])
+                      resp = requests.put(f'{base_url}/open_positions', headers=headers, data=positions_json)
+                      print(f'Open positions saved: {resp.status_code} ({len(state[\"positions\"])} positions)')
 
                   # Decision log
                   if 'decision_log' in state:

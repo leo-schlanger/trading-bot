@@ -21,16 +21,35 @@ export async function onRequestGet(context) {
     const decisionsData = await env.TRADING_KV.get('decision_log');
     const decisions = decisionsData ? JSON.parse(decisionsData) : [];
 
+    // Get open positions if available
+    const positionsData = await env.TRADING_KV.get('open_positions');
+    const positions = positionsData ? JSON.parse(positionsData) : {};
+
     // Get safety events if available
     const safetyData = await env.TRADING_KV.get('safety_events');
     const safetyEvents = safetyData ? JSON.parse(safetyData) : [];
 
+    // Calculate portfolio summary
+    const portfolioSummary = {
+      capital: state.capital || 500,
+      totalPnl: state.total_pnl || 0,
+      totalTrades: state.total_trades || 0,
+      winningTrades: state.winning_trades || 0,
+      losingTrades: state.losing_trades || 0,
+      winRate: state.total_trades > 0 ? (state.winning_trades || 0) / state.total_trades : 0,
+      consecutiveLosses: state.consecutive_losses || 0,
+      consecutiveWins: state.consecutive_wins || 0,
+      openPositions: Object.keys(positions).length || Object.keys(state.positions || {}).length
+    };
+
     return Response.json({
       success: true,
       state: state,
+      positions: positions || state.positions || {},
       decisions: decisions.slice(-50), // Last 50 decisions
       safetyEvents: safetyEvents.slice(-20), // Last 20 safety events
-      lastUpdate: state.last_update || null
+      portfolioSummary: portfolioSummary,
+      lastUpdate: state.last_run || null
     });
   } catch (error) {
     return Response.json(

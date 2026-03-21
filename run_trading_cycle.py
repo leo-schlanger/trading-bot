@@ -6,8 +6,9 @@ Este script:
 2. Detecta regime de mercado
 3. Seleciona estratégia
 4. Verifica sinais
-5. Executa trades (se em modo live)
-6. Envia notificações
+5. Gerencia posições (paper trading com SL/TP)
+6. Atualiza capital e P&L
+7. Envia notificações
 """
 
 import os
@@ -17,7 +18,7 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Setup path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -50,6 +51,98 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+class PaperPosition:
+    """Representa uma posição aberta em paper trading."""
+
+    def __init__(self, data: Dict[str, Any]):
+        self.symbol = data.get('symbol')
+        self.direction = data.get('direction')  # 'LONG' or 'SHORT'
+        self.entry_price = data.get('entry_price', 0)
+        self.entry_time = data.get('entry_time')
+        self.size = data.get('size', 0)  # Quantidade do ativo
+        self.value = data.get('value', 0)  # Valor em USD
+        self.stop_loss = data.get('stop_loss', 0)
+        self.take_profit = data.get('take_profit', 0)
+        self.regime = data.get('regime')
+        self.strategy = data.get('strategy')
+        self.signal_confidence = data.get('signal_confidence', 0)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'symbol': self.symbol,
+            'direction': self.direction,
+            'entry_price': self.entry_price,
+            'entry_time': self.entry_time,
+            'size': self.size,
+            'value': self.value,
+            'stop_loss': self.stop_loss,
+            'take_profit': self.take_profit,
+            'regime': self.regime,
+            'strategy': self.strategy,
+            'signal_confidence': self.signal_confidence
+        }
+
+    def check_exit(self, high: float, low: float, current_price: float) -> Optional[Dict[str, Any]]:
+        """
+        Verifica se a posição deve ser fechada.
+
+        Returns:
+            Dict com informações do exit se deve fechar, None caso contrário
+        """
+        if self.direction == 'LONG':
+            # Check stop loss (low touched SL)
+            if low <= self.stop_loss:
+                return {
+                    'reason': 'stop_loss',
+                    'exit_price': self.stop_loss,
+                    'pnl': (self.stop_loss - self.entry_price) * self.size,
+                    'pnl_pct': (self.stop_loss - self.entry_price) / self.entry_price
+                }
+            # Check take profit (high touched TP)
+            if high >= self.take_profit:
+                return {
+                    'reason': 'take_profit',
+                    'exit_price': self.take_profit,
+                    'pnl': (self.take_profit - self.entry_price) * self.size,
+                    'pnl_pct': (self.take_profit - self.entry_price) / self.entry_price
+                }
+        else:  # SHORT
+            # Check stop loss (high touched SL)
+            if high >= self.stop_loss:
+                return {
+                    'reason': 'stop_loss',
+                    'exit_price': self.stop_loss,
+                    'pnl': (self.entry_price - self.stop_loss) * self.size,
+                    'pnl_pct': (self.entry_price - self.stop_loss) / self.entry_price
+                }
+            # Check take profit (low touched TP)
+            if low <= self.take_profit:
+                return {
+                    'reason': 'take_profit',
+                    'exit_price': self.take_profit,
+                    'pnl': (self.entry_price - self.take_profit) * self.size,
+                    'pnl_pct': (self.entry_price - self.take_profit) / self.entry_price
+                }
+
+        return None
+
+    def close_at_price(self, price: float, reason: str = 'signal') -> Dict[str, Any]:
+        """Fecha a posição ao preço especificado."""
+        if self.direction == 'LONG':
+            pnl = (price - self.entry_price) * self.size
+            pnl_pct = (price - self.entry_price) / self.entry_price
+        else:  # SHORT
+            pnl = (self.entry_price - price) * self.size
+            pnl_pct = (self.entry_price - price) / self.entry_price
+
+        return {
+            'reason': reason,
+            'exit_price': price,
+            'pnl': pnl,
+            'pnl_pct': pnl_pct
+        }
 
 
 class TradingCycle:
@@ -88,20 +181,28 @@ class TradingCycle:
         if self.state_file.exists():
             try:
                 with open(self.state_file, 'r') as f:
-                    return json.load(f)
+                    state = json.load(f)
+                    # Migração: converter positions antigo para novo formato
+                    if 'position' in state and state['position'] is None:
+                        if 'positions' not in state:
+                            state['positions'] = {}
+                    return state
             except Exception as e:
                 logger.warning(f"Erro ao carregar estado: {e}")
 
         return {
             'capital': 500.0,
-            'position': None,
+            'positions': {},  # {symbol: position_data}
             'last_regime': None,
             'consecutive_losses': 0,
+            'consecutive_wins': 0,
             'total_trades': 0,
+            'winning_trades': 0,
+            'losing_trades': 0,
             'total_pnl': 0.0,
             'decision_log': [],
             'last_signals': {},
-            'paper_trades': []
+            'trade_history': []  # Histórico completo de trades fechados
         }
 
     def _save_state(self):
@@ -145,6 +246,144 @@ class TradingCycle:
         except Exception as e:
             logger.error(f"Erro ao carregar dados: {e}")
             return None
+
+    def _check_open_positions(self, df: pd.DataFrame, symbol: str) -> List[Dict[str, Any]]:
+        """
+        Verifica posições abertas e fecha se SL/TP foi atingido.
+
+        Returns:
+            Lista de trades fechados
+        """
+        closed_trades = []
+        positions = self.state.get('positions', {})
+
+        if symbol not in positions:
+            return closed_trades
+
+        position_data = positions[symbol]
+        position = PaperPosition(position_data)
+
+        # Pegar candles desde a entrada da posição
+        entry_time = pd.to_datetime(position.entry_time)
+
+        # Filtrar candles após a entrada
+        recent_candles = df[df.index > entry_time]
+
+        if recent_candles.empty:
+            # Verificar só o candle atual
+            recent_candles = df.tail(1)
+
+        # Verificar cada candle para SL/TP
+        for idx, candle in recent_candles.iterrows():
+            exit_info = position.check_exit(
+                high=candle['high'],
+                low=candle['low'],
+                current_price=candle['close']
+            )
+
+            if exit_info:
+                # Fechar posição
+                trade_record = self._close_position(symbol, position, exit_info, idx)
+                closed_trades.append(trade_record)
+                break
+
+        return closed_trades
+
+    def _close_position(self, symbol: str, position: PaperPosition,
+                        exit_info: Dict[str, Any], exit_time) -> Dict[str, Any]:
+        """Fecha uma posição e atualiza o estado."""
+        pnl = exit_info['pnl']
+        pnl_pct = exit_info['pnl_pct']
+
+        # Atualizar capital
+        self.state['capital'] += pnl
+        self.state['total_pnl'] += pnl
+        self.state['total_trades'] += 1
+
+        # Atualizar contadores de win/loss
+        if pnl > 0:
+            self.state['winning_trades'] = self.state.get('winning_trades', 0) + 1
+            self.state['consecutive_wins'] = self.state.get('consecutive_wins', 0) + 1
+            self.state['consecutive_losses'] = 0
+        else:
+            self.state['losing_trades'] = self.state.get('losing_trades', 0) + 1
+            self.state['consecutive_losses'] = self.state.get('consecutive_losses', 0) + 1
+            self.state['consecutive_wins'] = 0
+
+        # Atualizar risk manager
+        self.risk_manager.state.current_capital = self.state['capital']
+        if self.state['capital'] > self.risk_manager.state.peak_capital:
+            self.risk_manager.state.peak_capital = self.state['capital']
+        self.risk_manager.state.consecutive_losses = self.state['consecutive_losses']
+
+        # Criar registro do trade
+        trade_record = {
+            'symbol': symbol,
+            'direction': position.direction,
+            'entry_price': position.entry_price,
+            'entry_time': position.entry_time,
+            'exit_price': exit_info['exit_price'],
+            'exit_time': str(exit_time),
+            'exit_reason': exit_info['reason'],
+            'size': position.size,
+            'value': position.value,
+            'pnl': round(pnl, 2),
+            'pnl_pct': round(pnl_pct * 100, 2),
+            'regime': position.regime,
+            'strategy': position.strategy,
+            'stop_loss': position.stop_loss,
+            'take_profit': position.take_profit
+        }
+
+        # Adicionar ao histórico
+        if 'trade_history' not in self.state:
+            self.state['trade_history'] = []
+        self.state['trade_history'].append(trade_record)
+
+        # Remover posição
+        del self.state['positions'][symbol]
+
+        logger.info(f"FECHOU {position.direction} {symbol} @ ${exit_info['exit_price']:.2f} "
+                   f"| Razão: {exit_info['reason']} | P&L: ${pnl:.2f} ({pnl_pct*100:.2f}%)")
+
+        return trade_record
+
+    def _open_position(self, symbol: str, analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Abre uma nova posição."""
+        details = analysis.get('details', {})
+
+        if 'sizing' not in details:
+            return None
+
+        # Verificar se já tem posição neste símbolo
+        if symbol in self.state.get('positions', {}):
+            logger.warning(f"Já existe posição aberta em {symbol}, ignorando novo sinal")
+            return None
+
+        position_data = {
+            'symbol': symbol,
+            'direction': analysis['action'],
+            'entry_price': details['price'],
+            'entry_time': analysis['timestamp'],
+            'size': details['sizing'].get('position_size', 0),
+            'value': details['sizing'].get('position_value', 0),
+            'stop_loss': details['stop_loss'],
+            'take_profit': details['take_profit'],
+            'regime': analysis['regime'],
+            'strategy': analysis.get('strategy'),
+            'signal_confidence': details.get('signal_confidence', 0)
+        }
+
+        # Salvar posição
+        if 'positions' not in self.state:
+            self.state['positions'] = {}
+        self.state['positions'][symbol] = position_data
+
+        logger.info(f"ABRIU {analysis['action']} {symbol} @ ${details['price']:.2f} "
+                   f"| SL: ${details['stop_loss']:.2f} | TP: ${details['take_profit']:.2f} "
+                   f"| Size: ${position_data['value']:.2f}")
+
+        return position_data
 
     def analyze(self, df: pd.DataFrame, symbol: str) -> Dict[str, Any]:
         """Analisa mercado e gera recomendação."""
@@ -268,20 +507,54 @@ class TradingCycle:
 
         return result
 
-    def execute(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def execute(self, df: pd.DataFrame, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Executa a ação recomendada."""
         result = {
             'executed': False,
             'action': analysis['action'],
             'mode': self.mode,
-            'details': {}
+            'details': {},
+            'closed_trades': [],
+            'opened_position': None
         }
 
+        symbol = analysis['symbol']
+
+        # 1. Primeiro, verificar posições abertas para SL/TP
+        closed_trades = self._check_open_positions(df, symbol)
+        result['closed_trades'] = closed_trades
+
+        if closed_trades:
+            for trade in closed_trades:
+                logger.info(f"Trade fechado: {trade['direction']} {trade['symbol']} "
+                           f"| P&L: ${trade['pnl']:.2f}")
+
+        # 2. Se ação é HOLD, SKIP ou BLOCKED, não faz mais nada
         if analysis['action'] in ['HOLD', 'SKIP', 'BLOCKED']:
             logger.info(f"Nenhuma ação: {analysis['action']}")
             return result
 
-        # Log signal details for LONG/SHORT
+        # 3. Se já tem posição neste símbolo, verificar se deve fechar por sinal oposto
+        positions = self.state.get('positions', {})
+        if symbol in positions:
+            current_pos = positions[symbol]
+
+            # Se sinal é oposto, fechar posição atual
+            if (current_pos['direction'] == 'LONG' and analysis['action'] == 'SHORT') or \
+               (current_pos['direction'] == 'SHORT' and analysis['action'] == 'LONG'):
+
+                current_price = analysis['details'].get('price', df['close'].iloc[-1])
+                position = PaperPosition(current_pos)
+                exit_info = position.close_at_price(current_price, 'opposite_signal')
+                trade_record = self._close_position(symbol, position, exit_info, datetime.now())
+                result['closed_trades'].append(trade_record)
+                logger.info(f"Fechou posição por sinal oposto")
+            else:
+                # Mesmo sinal, já está posicionado
+                logger.info(f"Já posicionado {current_pos['direction']} em {symbol}, mantendo")
+                return result
+
+        # 4. Log signal details para LONG/SHORT
         if analysis['action'] in ['LONG', 'SHORT']:
             details = analysis.get('details', {})
             logger.info(f"Signal: {analysis['action']} | "
@@ -289,53 +562,28 @@ class TradingCycle:
                        f"Confidence: {details.get('signal_confidence', 0):.2f} | "
                        f"Reasons: {', '.join(details.get('signal_reasons', []))}")
 
+        # 5. Executar baseado no modo
         if self.mode == 'backtest':
             logger.info("Modo backtest - simulando execução")
             result['executed'] = True
             result['details']['simulated'] = True
 
         elif self.mode == 'paper':
-            logger.info("Modo paper trading - registrando trade simulado")
-            result['executed'] = True
-            result['details']['paper_trade'] = True
+            logger.info("Modo paper trading - abrindo posição simulada")
 
-            # Simular trade no estado
-            self._simulate_paper_trade(analysis)
+            # Abrir nova posição
+            opened = self._open_position(symbol, analysis)
+            if opened:
+                result['executed'] = True
+                result['opened_position'] = opened
+                result['details']['paper_trade'] = True
 
         elif self.mode == 'live':
             logger.info("Modo LIVE - executando trade real")
             # TODO: Integrar com exchange API
-            # result = self._execute_live_trade(analysis)
             logger.warning("Execução live não implementada ainda")
 
         return result
-
-    def _simulate_paper_trade(self, analysis: Dict[str, Any]):
-        """Simula trade em paper trading."""
-        if 'sizing' not in analysis['details']:
-            return
-
-        details = analysis['details']
-        trade = {
-            'timestamp': analysis['timestamp'],
-            'symbol': analysis['symbol'],
-            'action': analysis['action'],  # LONG or SHORT
-            'regime': analysis['regime'],
-            'price': details.get('price', 0),
-            'stop_loss': details.get('stop_loss', 0),
-            'take_profit': details.get('take_profit', 0),
-            'size': details['sizing'].get('position_size', 0),
-            'value': details['sizing'].get('position_value', 0),
-            'signal_strength': details.get('signal_strength', 'N/A'),
-            'signal_confidence': details.get('signal_confidence', 0),
-            'signal_reasons': details.get('signal_reasons', [])
-        }
-
-        # Salvar no estado
-        if 'paper_trades' not in self.state:
-            self.state['paper_trades'] = []
-        self.state['paper_trades'].append(trade)
-        self.state['total_trades'] = len(self.state['paper_trades'])
 
     def _log_decision(self, analysis: Dict[str, Any]):
         """Registra decisão para o dashboard."""
@@ -402,6 +650,38 @@ class TradingCycle:
         except Exception as e:
             logger.error(f"Erro ao enviar notificação: {e}")
 
+    def _get_portfolio_summary(self) -> Dict[str, Any]:
+        """Retorna resumo do portfólio."""
+        positions = self.state.get('positions', {})
+        trade_history = self.state.get('trade_history', [])
+
+        # Calcular win rate
+        total_closed = len(trade_history)
+        winning = sum(1 for t in trade_history if t.get('pnl', 0) > 0)
+        win_rate = winning / total_closed if total_closed > 0 else 0
+
+        # Calcular profit factor
+        gross_profit = sum(t['pnl'] for t in trade_history if t.get('pnl', 0) > 0)
+        gross_loss = abs(sum(t['pnl'] for t in trade_history if t.get('pnl', 0) < 0))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf') if gross_profit > 0 else 0
+
+        # Valor em posições abertas
+        open_value = sum(p.get('value', 0) for p in positions.values())
+
+        return {
+            'capital': self.state.get('capital', 500.0),
+            'total_pnl': self.state.get('total_pnl', 0),
+            'total_trades': total_closed,
+            'winning_trades': winning,
+            'losing_trades': total_closed - winning,
+            'win_rate': win_rate,
+            'profit_factor': profit_factor,
+            'open_positions': len(positions),
+            'open_value': open_value,
+            'consecutive_losses': self.state.get('consecutive_losses', 0),
+            'consecutive_wins': self.state.get('consecutive_wins', 0)
+        }
+
     def run(self, symbols: list = None):
         """Executa ciclo completo de trading."""
         symbols = symbols or ['BTC', 'ETH']
@@ -410,6 +690,7 @@ class TradingCycle:
         logger.info(f"Iniciando ciclo de trading - {datetime.now()}")
         logger.info(f"Modo: {self.mode}")
         logger.info(f"Símbolos: {symbols}")
+        logger.info(f"Capital: ${self.state.get('capital', 500.0):.2f}")
         logger.info("=" * 50)
 
         results = []
@@ -425,8 +706,8 @@ class TradingCycle:
             # Analisar
             analysis = self.analyze(df, symbol)
 
-            # Executar
-            execution = self.execute(analysis)
+            # Executar (inclui verificação de SL/TP)
+            execution = self.execute(df, analysis)
 
             # Registrar decisão para dashboard
             self._log_decision(analysis)
@@ -458,11 +739,17 @@ class TradingCycle:
         self._save_state()
 
         # Resumo
+        portfolio = self._get_portfolio_summary()
         logger.info("\n" + "=" * 50)
         logger.info("RESUMO DO CICLO")
         logger.info("=" * 50)
+        logger.info(f"Capital: ${portfolio['capital']:.2f} | P&L Total: ${portfolio['total_pnl']:.2f}")
+        logger.info(f"Trades: {portfolio['total_trades']} | Win Rate: {portfolio['win_rate']*100:.1f}%")
+        logger.info(f"Posições Abertas: {portfolio['open_positions']}")
+
         for r in results:
             analysis = r['analysis']
+            execution = r['execution']
             details = analysis.get('details', {})
             action = analysis['action']
             regime = analysis['regime']
@@ -476,8 +763,16 @@ class TradingCycle:
                 logger.info(f"{r['symbol']}: {action} | Regime: {regime} | "
                            f"Strength: {strength} | Confidence: {conf:.2f}")
                 logger.info(f"  Price: ${price:.2f} | Stop: ${stop:.2f} | Target: ${target:.2f}")
+
+                if execution.get('closed_trades'):
+                    for ct in execution['closed_trades']:
+                        logger.info(f"  FECHOU: {ct['exit_reason']} | P&L: ${ct['pnl']:.2f}")
             else:
                 logger.info(f"{r['symbol']}: {action} ({regime})")
+
+                if execution.get('closed_trades'):
+                    for ct in execution['closed_trades']:
+                        logger.info(f"  FECHOU: {ct['exit_reason']} | P&L: ${ct['pnl']:.2f}")
 
         return results
 

@@ -370,8 +370,10 @@ export default function App() {
   // Extract data
   const state = data?.state?.state || {}
   const lastSignals = state.last_signals || {}
-  const trades = data?.history?.trades || state.paper_trades || []
+  const trades = data?.history?.trades || state.trade_history || []
+  const openPositions = data?.state?.positions || state.positions || {}
   const metrics = data?.metrics?.metrics || {}
+  const portfolioSummary = data?.state?.portfolioSummary || {}
   const safetyStatus = data?.state?.safetyStatus || {}
   const decisionLog = data?.state?.decisions || state.decision_log || []
 
@@ -558,15 +560,15 @@ export default function App() {
                 />
                 <MetricCard
                   title="Total Trades"
-                  value={trades.length || state.total_trades || 0}
-                  subtitle="Paper trades executed"
+                  value={portfolioSummary.totalTrades || trades.length || state.total_trades || 0}
+                  subtitle={`Open: ${Object.keys(openPositions).length}`}
                   icon={Target}
                   color="primary"
                 />
                 <MetricCard
                   title="Win Rate"
-                  value={metrics.win_rate ? formatPercent(metrics.win_rate) : '--'}
-                  subtitle="Profitable trades"
+                  value={portfolioSummary.winRate ? formatPercent(portfolioSummary.winRate) : (metrics.win_rate ? formatPercent(metrics.win_rate) : '--')}
+                  subtitle={`W: ${portfolioSummary.winningTrades || 0} / L: ${portfolioSummary.losingTrades || 0}`}
                   icon={TrendUp}
                   color="success"
                 />
@@ -587,6 +589,60 @@ export default function App() {
                   </Card>
                 )}
               </div>
+
+              {/* Open Positions */}
+              {Object.keys(openPositions).length > 0 && (
+                <Card className="border-primary/50">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Zap className="w-5 h-5 text-primary" />
+                      Open Positions
+                    </CardTitle>
+                    <CardDescription>Currently active paper trades</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      {Object.entries(openPositions).map(([symbol, pos]) => (
+                        <div key={symbol} className="p-4 rounded-xl bg-secondary/50 border border-border">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-3">
+                              <div className={cn(
+                                "w-10 h-10 rounded-xl flex items-center justify-center",
+                                symbol === 'BTC' ? "bg-gradient-to-br from-yellow-500 to-orange-500" : "bg-gradient-to-br from-blue-500 to-purple-500"
+                              )}>
+                                {symbol === 'BTC' ? <Bitcoin className="w-5 h-5 text-white" /> : <Layers className="w-5 h-5 text-white" />}
+                              </div>
+                              <div>
+                                <p className="font-semibold">{symbol}-PERP</p>
+                                <p className="text-xs text-muted-foreground">Opened {formatDate(pos.entry_time)}</p>
+                              </div>
+                            </div>
+                            <SignalBadge action={pos.direction} size="lg" />
+                          </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                            <div className="p-2 rounded-lg bg-background/50">
+                              <p className="text-xs text-muted-foreground">Entry Price</p>
+                              <p className="font-semibold">{formatCurrency(pos.entry_price)}</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-background/50">
+                              <p className="text-xs text-muted-foreground">Position Size</p>
+                              <p className="font-semibold">{formatCurrency(pos.value)}</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-danger/10">
+                              <p className="text-xs text-danger">Stop Loss</p>
+                              <p className="font-semibold text-danger">{formatCurrency(pos.stop_loss)}</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-success/10">
+                              <p className="text-xs text-success">Take Profit</p>
+                              <p className="font-semibold text-success">{formatCurrency(pos.take_profit)}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Equity Chart */}
               {equityCurve.length > 1 && (
@@ -805,30 +861,39 @@ export default function App() {
                   <Clock className="w-5 h-5" />
                   Trade History
                 </CardTitle>
-                <CardDescription>All paper trades executed ({trades.length} total)</CardDescription>
+                <CardDescription>
+                  Closed trades with P&L ({trades.length} total)
+                  {trades.length > 0 && (
+                    <span className={cn("ml-2 font-semibold",
+                      trades.reduce((sum, t) => sum + (t.pnl || 0), 0) >= 0 ? "text-success" : "text-danger"
+                    )}>
+                      Total: {formatCurrency(trades.reduce((sum, t) => sum + (t.pnl || 0), 0))}
+                    </span>
+                  )}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border">
-                        <th className="text-left p-4 text-muted-foreground font-medium">Time</th>
+                        <th className="text-left p-4 text-muted-foreground font-medium">Entry/Exit</th>
                         <th className="text-left p-4 text-muted-foreground font-medium">Symbol</th>
                         <th className="text-left p-4 text-muted-foreground font-medium">Direction</th>
                         <th className="text-left p-4 text-muted-foreground font-medium">Entry</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Stop</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Target</th>
+                        <th className="text-left p-4 text-muted-foreground font-medium">Exit</th>
                         <th className="text-left p-4 text-muted-foreground font-medium">Size</th>
+                        <th className="text-left p-4 text-muted-foreground font-medium">P&L</th>
+                        <th className="text-left p-4 text-muted-foreground font-medium">Exit Reason</th>
                         <th className="text-left p-4 text-muted-foreground font-medium">Regime</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Confidence</th>
                       </tr>
                     </thead>
                     <tbody>
                       {trades.slice().reverse().map((trade, i) => (
                         <tr key={i} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
-                          <td className="p-4 text-muted-foreground">
-                            {new Date(trade.timestamp).toLocaleDateString()}<br/>
-                            <span className="text-xs">{new Date(trade.timestamp).toLocaleTimeString()}</span>
+                          <td className="p-4 text-muted-foreground text-xs">
+                            <div>{trade.entry_time ? new Date(trade.entry_time).toLocaleDateString() : '--'}</div>
+                            <div className="text-muted-foreground/70">{trade.exit_time ? new Date(trade.exit_time).toLocaleDateString() : '--'}</div>
                           </td>
                           <td className="p-4">
                             <div className="flex items-center gap-2">
@@ -842,23 +907,47 @@ export default function App() {
                             </div>
                           </td>
                           <td className="p-4">
-                            <SignalBadge action={trade.action} />
+                            <SignalBadge action={trade.direction || trade.action} />
                           </td>
-                          <td className="p-4 font-mono">{formatCurrency(trade.price)}</td>
-                          <td className="p-4 font-mono text-danger">{formatCurrency(trade.stop_loss)}</td>
-                          <td className="p-4 font-mono text-success">{formatCurrency(trade.take_profit)}</td>
+                          <td className="p-4 font-mono">{formatCurrency(trade.entry_price || trade.price)}</td>
+                          <td className="p-4 font-mono">{formatCurrency(trade.exit_price)}</td>
                           <td className="p-4 font-mono">{formatCurrency(trade.value)}</td>
+                          <td className="p-4">
+                            <div className={cn(
+                              "font-semibold",
+                              (trade.pnl || 0) >= 0 ? "text-success" : "text-danger"
+                            )}>
+                              {(trade.pnl || 0) >= 0 ? '+' : ''}{formatCurrency(trade.pnl || 0)}
+                            </div>
+                            <div className={cn(
+                              "text-xs",
+                              (trade.pnl_pct || 0) >= 0 ? "text-success/70" : "text-danger/70"
+                            )}>
+                              {(trade.pnl_pct || 0) >= 0 ? '+' : ''}{trade.pnl_pct || 0}%
+                            </div>
+                          </td>
+                          <td className="p-4">
+                            <Badge variant={
+                              trade.exit_reason === 'take_profit' ? 'success' :
+                              trade.exit_reason === 'stop_loss' ? 'danger' : 'secondary'
+                            } className="text-xs">
+                              {trade.exit_reason === 'take_profit' ? 'TP Hit' :
+                               trade.exit_reason === 'stop_loss' ? 'SL Hit' :
+                               trade.exit_reason === 'opposite_signal' ? 'Signal' :
+                               trade.exit_reason || 'Open'}
+                            </Badge>
+                          </td>
                           <td className="p-4">
                             <Badge variant="secondary" className="capitalize">{trade.regime}</Badge>
                           </td>
-                          <td className="p-4">{formatPercent(trade.signal_confidence || 0)}</td>
                         </tr>
                       ))}
                       {trades.length === 0 && (
                         <tr>
                           <td colSpan={9} className="p-12 text-center text-muted-foreground">
                             <Clock className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                            <p>No trades executed yet</p>
+                            <p>No closed trades yet</p>
+                            <p className="text-xs mt-1">Trades will appear here when positions are closed (SL/TP hit or opposite signal)</p>
                           </td>
                         </tr>
                       )}
