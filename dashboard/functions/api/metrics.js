@@ -221,6 +221,7 @@ function calculateMetrics(trades, state) {
     totalReturn: totalReturn.toFixed(2),
     volatility: (stdDev * Math.sqrt(252)).toFixed(2),
     calmarRatio: maxDrawdown > 0 ? (totalReturn / maxDrawdown).toFixed(2) : 0,
+    win_rate: winRate,
     tradesByAsset,
     tradesByStrategy,
     tradesByRegime

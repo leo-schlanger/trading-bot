@@ -42,12 +42,24 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+
+  /* Mobile first - better touch targets */
+  @media (max-width: 640px) {
+    button, a, [role="button"] {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
 }
 
 @layer components {
-  /* Glassmorphism card */
-  .glass {
-    @apply bg-card/80 backdrop-blur-xl border border-border/50;
+  /* Glass morphism */
+  .glass-panel {
+    @apply bg-background/80 backdrop-blur-xl;
+  }
+
+  .glass-card {
+    @apply bg-card/60 backdrop-blur-xl border-border/50;
   }
 
   /* Gradient text */
@@ -92,18 +104,19 @@
     text-wrap: balance;
   }
 
+  /* Tabular numbers for consistent number alignment */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
   /* Custom animations */
   .animate-glow {
     animation: glow 2s ease-in-out infinite alternate;
   }
 
   @keyframes glow {
-    from {
-      box-shadow: 0 0 10px hsl(var(--primary) / 0.2);
-    }
-    to {
-      box-shadow: 0 0 20px hsl(var(--primary) / 0.4);
-    }
+    from { box-shadow: 0 0 10px hsl(var(--primary) / 0.2); }
+    to { box-shadow: 0 0 20px hsl(var(--primary) / 0.4); }
   }
 
   .animate-gradient {
@@ -112,15 +125,30 @@
   }
 
   @keyframes gradient {
-    0% {
-      background-position: 0% 50%;
-    }
-    50% {
-      background-position: 100% 50%;
-    }
-    100% {
-      background-position: 0% 50%;
-    }
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+
+  /* Float animation */
+  .animate-float {
+    animation: float 3s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+
+  /* Shake animation */
+  .animate-shake {
+    animation: shake 0.3s ease-in-out;
+  }
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
   }
 
   /* Fade in animation */
@@ -129,14 +157,8 @@
   }
 
   @keyframes fadeIn {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   /* Slide in animation */
@@ -145,30 +167,18 @@
   }
 
   @keyframes slideIn {
-    from {
-      opacity: 0;
-      transform: translateX(-20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
   }
 
-  /* Number animation */
-  .animate-count {
-    animation: count 0.5s ease-out;
+  /* Scale in animation */
+  .animate-scale-in {
+    animation: scaleIn 0.2s ease-out;
   }
 
-  @keyframes count {
-    from {
-      opacity: 0;
-      transform: scale(0.5);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
   }
 }
 
@@ -220,21 +230,60 @@ table {
   border-spacing: 0;
 }
 
-/* Responsive typography */
-@media (max-width: 640px) {
+/* Mobile first responsive typography */
+html {
+  font-size: 14px;
+}
+
+@media (min-width: 640px) {
   html {
-    font-size: 14px;
+    font-size: 15px;
+  }
+}
+
+@media (min-width: 1024px) {
+  html {
+    font-size: 16px;
+  }
+}
+
+/* Safe area insets for mobile */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/* Prevent text selection on mobile UI elements */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Better tap feedback on mobile */
+@media (max-width: 1024px) {
+  button:active,
+  [role="button"]:active {
+    transform: scale(0.98);
+    transition: transform 0.1s ease;
   }
 }
 
 /* Print styles */
 @media print {
-  body {
-    background: white;
-    color: black;
-  }
-
   .no-print {
     display: none !important;
+  }
+}
+
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

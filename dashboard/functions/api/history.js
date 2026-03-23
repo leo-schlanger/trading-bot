@@ -25,7 +25,7 @@ export async function onRequestGet(context) {
 
     // Filter by asset if specified
     if (asset) {
-      trades = trades.filter(t => t.asset === asset);
+      trades = trades.filter(t => t.symbol === asset || t.asset === asset);
     }
 
     // Sort by timestamp descending (most recent first)
@@ -103,7 +103,7 @@ function calculateTradeStats(trades) {
     openTrades: trades.length - closedTrades.length,
     wins: wins.length,
     losses: losses.length,
-    winRate: closedTrades.length > 0 ? (wins.length / closedTrades.length * 100) : 0,
+    winRate: closedTrades.length > 0 ? (wins.length / closedTrades.length) : 0,
     totalPnL: totalPnL,
     avgPnL: closedTrades.length > 0 ? totalPnL / closedTrades.length : 0,
     bestTrade: Math.max(...pnls, 0),

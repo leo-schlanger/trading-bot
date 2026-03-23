@@ -42,6 +42,24 @@ export async function onRequestGet(context) {
       openPositions: Object.keys(positions).length || Object.keys(state.positions || {}).length
     };
 
+    // Calculate safety status
+    const consecutiveLosses = state.consecutive_losses || 0;
+    const riskState = state.risk_state || {};
+    const capital = state.capital || 500;
+    const peak = riskState.peak || 500;
+    const currentDrawdown = peak > 0 ? ((peak - capital) / peak) * 100 : 0;
+
+    const warnings = [];
+    if (consecutiveLosses >= 2) warnings.push(`${consecutiveLosses} consecutive losses`);
+    if (currentDrawdown >= 10) warnings.push(`Drawdown at ${currentDrawdown.toFixed(1)}%`);
+
+    const safetyStatus = {
+      blocked: consecutiveLosses >= 3 || currentDrawdown >= 20,
+      warnings: warnings,
+      consecutiveLosses: consecutiveLosses,
+      currentDrawdown: currentDrawdown
+    };
+
     return Response.json({
       success: true,
       state: state,
@@ -49,6 +67,7 @@ export async function onRequestGet(context) {
       decisions: decisions.slice(-50), // Last 50 decisions
       safetyEvents: safetyEvents.slice(-20), // Last 20 safety events
       portfolioSummary: portfolioSummary,
+      safetyStatus: safetyStatus,
       lastUpdate: state.last_run || null
     });
   } catch (error) {

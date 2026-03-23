@@ -1,23 +1,23 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn, formatCurrency, formatPercent, formatDate, formatReason, formatTrap } from '@/lib/utils'
 import {
   LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, BarChart, Bar
+  PieChart, Pie, Cell, BarChart, Bar, ComposedChart, ReferenceLine
 } from 'recharts'
 import {
   TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle, XCircle,
   RefreshCw, DollarSign, Activity, Shield, BarChart3, Clock, Target,
   ArrowUpRight, ArrowDownRight, AlertCircle, Lock, Zap, Eye, EyeOff,
-  Wallet, PieChart as PieChartIcon, Settings, Bell, Moon, Sun, Menu, X,
-  Bitcoin, Layers, Brain, TrendingUp as TrendUp, ChevronRight, ExternalLink
+  Wallet, PieChart as PieChartIcon, Menu, X, Bitcoin, Layers, Brain,
+  ChevronRight, Flame, Gauge, Timer, Crosshair
 } from 'lucide-react'
 
 const API_BASE = '/api'
 
-// Color constants
+// Theme colors
 const COLORS = {
   success: '#22c55e',
   danger: '#ef4444',
@@ -25,17 +25,131 @@ const COLORS = {
   primary: '#3b82f6',
   purple: '#8b5cf6',
   cyan: '#06b6d4',
+  pink: '#ec4899',
 }
 
-// Custom tooltip for charts
+// Animated number component
+const AnimatedNumber = ({ value, prefix = '', suffix = '', decimals = 2 }) => {
+  const [displayValue, setDisplayValue] = useState(value)
+
+  useEffect(() => {
+    const duration = 500
+    const start = displayValue
+    const end = value
+    const startTime = Date.now()
+
+    const animate = () => {
+      const now = Date.now()
+      const progress = Math.min((now - startTime) / duration, 1)
+      const eased = 1 - Math.pow(1 - progress, 3)
+      setDisplayValue(start + (end - start) * eased)
+      if (progress < 1) requestAnimationFrame(animate)
+    }
+    animate()
+  }, [value])
+
+  return <span>{prefix}{displayValue.toFixed(decimals)}{suffix}</span>
+}
+
+// Sparkline component
+const Sparkline = ({ data, color = COLORS.primary, height = 40 }) => {
+  if (!data || data.length < 2) return null
+
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={data}>
+        <defs>
+          <linearGradient id={`spark-${color}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={0.3} />
+            <stop offset="100%" stopColor={color} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <Area
+          type="monotone"
+          dataKey="value"
+          stroke={color}
+          strokeWidth={1.5}
+          fill={`url(#spark-${color})`}
+          isAnimationActive={false}
+        />
+      </AreaChart>
+    </ResponsiveContainer>
+  )
+}
+
+// Progress bar for SL/TP
+const PositionProgressBar = ({ currentPrice, entryPrice, stopLoss, takeProfit, direction }) => {
+  const isLong = direction === 'LONG'
+
+  // Calculate position on the scale (0 = SL, 100 = TP)
+  let progress
+  if (isLong) {
+    const range = takeProfit - stopLoss
+    progress = ((currentPrice - stopLoss) / range) * 100
+  } else {
+    const range = stopLoss - takeProfit
+    progress = ((stopLoss - currentPrice) / range) * 100
+  }
+
+  progress = Math.max(0, Math.min(100, progress))
+
+  // Entry point position
+  let entryPosition
+  if (isLong) {
+    entryPosition = ((entryPrice - stopLoss) / (takeProfit - stopLoss)) * 100
+  } else {
+    entryPosition = ((stopLoss - entryPrice) / (stopLoss - takeProfit)) * 100
+  }
+
+  const isProfitable = isLong ? currentPrice > entryPrice : currentPrice < entryPrice
+
+  return (
+    <div className="relative w-full">
+      <div className="flex justify-between text-xs mb-1">
+        <span className="text-danger font-medium">SL: {formatCurrency(stopLoss)}</span>
+        <span className="text-success font-medium">TP: {formatCurrency(takeProfit)}</span>
+      </div>
+      <div className="relative h-3 bg-secondary rounded-full overflow-hidden">
+        {/* Background gradient */}
+        <div className="absolute inset-0 bg-gradient-to-r from-danger/20 via-warning/20 to-success/20" />
+
+        {/* Entry marker */}
+        <div
+          className="absolute top-0 bottom-0 w-0.5 bg-muted-foreground/50 z-10"
+          style={{ left: `${entryPosition}%` }}
+        />
+
+        {/* Current price indicator */}
+        <div
+          className={cn(
+            "absolute top-0 bottom-0 w-3 h-3 rounded-full border-2 border-background shadow-lg transition-all duration-300 -translate-x-1/2",
+            isProfitable ? "bg-success" : "bg-danger"
+          )}
+          style={{ left: `${progress}%` }}
+        />
+      </div>
+      <div className="flex justify-between text-xs mt-1 text-muted-foreground">
+        <span>Loss Zone</span>
+        <span className="text-foreground font-medium">
+          Entry: {formatCurrency(entryPrice)}
+        </span>
+        <span>Profit Zone</span>
+      </div>
+    </div>
+  )
+}
+
+// Custom tooltip
 const CustomTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
     return (
-      <div className="bg-card/95 backdrop-blur-sm border border-border rounded-lg p-3 shadow-xl">
+      <div className="glass-panel p-3 rounded-xl shadow-2xl border border-white/10">
         <p className="text-xs text-muted-foreground mb-1">{label}</p>
         {payload.map((entry, index) => (
           <p key={index} className="text-sm font-semibold" style={{ color: entry.color }}>
-            {entry.name}: {typeof entry.value === 'number' ? formatCurrency(entry.value) : entry.value}
+            {entry.name}: {typeof entry.value === 'number' ?
+              (entry.dataKey === 'equity' || entry.dataKey === 'pnl' ? formatCurrency(entry.value) : entry.value.toFixed(2))
+              : entry.value}
           </p>
         ))}
       </div>
@@ -44,83 +158,93 @@ const CustomTooltip = ({ active, payload, label }) => {
   return null
 }
 
-// Metric Card Component
-const MetricCard = ({ title, value, subtitle, icon: Icon, trend, trendValue, color = 'primary', className }) => (
-  <Card className={cn("relative overflow-hidden group hover:shadow-lg transition-all duration-300", className)}>
+// Metric Card with glass effect
+const MetricCard = ({ title, value, subtitle, icon: Icon, trend, trendValue, color = 'primary', sparkData, className }) => (
+  <Card className={cn(
+    "glass-card group hover:scale-[1.02] transition-all duration-300 overflow-hidden",
+    className
+  )}>
     <div className={cn(
-      "absolute inset-0 opacity-5 group-hover:opacity-10 transition-opacity",
-      `bg-gradient-to-br from-${color} to-transparent`
+      "absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300",
+      "bg-gradient-to-br from-white/5 to-transparent"
     )} />
     <CardContent className="p-4 relative">
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between mb-2">
         <div className="flex-1">
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{title}</p>
-          <p className="text-2xl font-bold mt-1">{value}</p>
-          {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
-          {trend !== undefined && (
-            <div className={cn(
-              "flex items-center gap-1 mt-2 text-xs font-medium",
-              trend >= 0 ? "text-success" : "text-danger"
-            )}>
-              {trend >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-              <span>{trend >= 0 ? '+' : ''}{trendValue}</span>
-            </div>
-          )}
+          <p className="text-2xl font-bold mt-1 tabular-nums">{value}</p>
+          {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
         </div>
         <div className={cn(
-          "w-10 h-10 rounded-xl flex items-center justify-center",
-          color === 'success' ? "bg-success/10" :
-          color === 'danger' ? "bg-danger/10" :
-          color === 'warning' ? "bg-warning/10" :
-          "bg-primary/10"
+          "w-10 h-10 rounded-xl flex items-center justify-center glass-panel",
+          color === 'success' ? "text-success" :
+          color === 'danger' ? "text-danger" :
+          color === 'warning' ? "text-warning" :
+          color === 'purple' ? "text-purple-500" :
+          "text-primary"
         )}>
-          <Icon className={cn(
-            "w-5 h-5",
-            color === 'success' ? "text-success" :
-            color === 'danger' ? "text-danger" :
-            color === 'warning' ? "text-warning" :
-            "text-primary"
-          )} />
+          <Icon className="w-5 h-5" />
         </div>
       </div>
+      {sparkData && sparkData.length > 1 && (
+        <div className="h-8 -mx-1 mt-2">
+          <Sparkline
+            data={sparkData}
+            color={color === 'success' ? COLORS.success : color === 'danger' ? COLORS.danger : COLORS.primary}
+          />
+        </div>
+      )}
+      {trend !== undefined && (
+        <div className={cn(
+          "flex items-center gap-1 mt-2 text-xs font-medium",
+          trend >= 0 ? "text-success" : "text-danger"
+        )}>
+          {trend >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          <span>{trend >= 0 ? '+' : ''}{trendValue}</span>
+        </div>
+      )}
     </CardContent>
   </Card>
 )
 
-// Signal Badge Component
+// Signal Badge
 const SignalBadge = ({ action, size = 'default' }) => {
   const config = {
-    'LONG': { color: 'success', icon: TrendingUp },
-    'SHORT': { color: 'danger', icon: TrendingDown },
-    'HOLD': { color: 'secondary', icon: Minus },
-    'BLOCKED': { color: 'warning', icon: AlertTriangle },
+    'LONG': { color: 'success', icon: TrendingUp, bg: 'bg-success/10 text-success border-success/20' },
+    'SHORT': { color: 'danger', icon: TrendingDown, bg: 'bg-danger/10 text-danger border-danger/20' },
+    'HOLD': { color: 'secondary', icon: Minus, bg: 'bg-secondary text-muted-foreground border-border' },
+    'BLOCKED': { color: 'warning', icon: AlertTriangle, bg: 'bg-warning/10 text-warning border-warning/20' },
   }
-  const { color, icon: Icon } = config[action] || config['HOLD']
+  const { icon: Icon, bg } = config[action] || config['HOLD']
 
   return (
-    <Badge variant={color} className={cn(
-      "flex items-center gap-1",
-      size === 'lg' && "text-lg px-4 py-2"
+    <span className={cn(
+      "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-medium",
+      bg,
+      size === 'lg' && "text-base px-4 py-2"
     )}>
-      <Icon className={cn("w-3 h-3", size === 'lg' && "w-4 h-4")} />
+      <Icon className={cn("w-3.5 h-3.5", size === 'lg' && "w-4 h-4")} />
       {action}
-    </Badge>
+    </span>
   )
 }
 
-// Live Price Component
+// Live Price Badge
 const LivePrice = ({ symbol, price, change }) => (
-  <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-secondary/50">
-    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yellow-500 to-orange-500 flex items-center justify-center">
+  <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl glass-panel">
+    <div className={cn(
+      "w-8 h-8 rounded-lg flex items-center justify-center",
+      symbol === 'BTC' ? "bg-gradient-to-br from-yellow-500 to-orange-500" : "bg-gradient-to-br from-blue-500 to-purple-500"
+    )}>
       {symbol === 'BTC' ? <Bitcoin className="w-4 h-4 text-white" /> : <Layers className="w-4 h-4 text-white" />}
     </div>
     <div>
       <p className="text-sm font-semibold">{symbol}</p>
-      <p className="text-xs text-muted-foreground">{formatCurrency(price)}</p>
+      <p className="text-xs text-muted-foreground tabular-nums">{formatCurrency(price)}</p>
     </div>
     {change !== undefined && (
       <span className={cn(
-        "text-xs font-medium ml-auto",
+        "text-xs font-semibold ml-1 tabular-nums",
         change >= 0 ? "text-success" : "text-danger"
       )}>
         {change >= 0 ? '+' : ''}{change.toFixed(2)}%
@@ -129,52 +253,209 @@ const LivePrice = ({ symbol, price, change }) => (
   </div>
 )
 
+// Position Card (for Active Positions tab)
+const PositionCard = ({ symbol, position, currentPrice }) => {
+  if (!position) return null
+
+  const entryPrice = position.entry_price
+  const isLong = position.direction === 'LONG'
+  const priceDiff = currentPrice - entryPrice
+  const unrealizedPnL = isLong ? priceDiff * (position.value / entryPrice) : -priceDiff * (position.value / entryPrice)
+  const unrealizedPnLPct = (unrealizedPnL / position.value) * 100
+  const isProfitable = unrealizedPnL >= 0
+
+  // Time open
+  const entryTime = new Date(position.entry_time)
+  const now = new Date()
+  const hoursOpen = Math.floor((now - entryTime) / (1000 * 60 * 60))
+  const daysOpen = Math.floor(hoursOpen / 24)
+  const timeString = daysOpen > 0 ? `${daysOpen}d ${hoursOpen % 24}h` : `${hoursOpen}h`
+
+  // Distance to SL/TP
+  const distanceToSL = isLong
+    ? ((currentPrice - position.stop_loss) / currentPrice * 100)
+    : ((position.stop_loss - currentPrice) / currentPrice * 100)
+  const distanceToTP = isLong
+    ? ((position.take_profit - currentPrice) / currentPrice * 100)
+    : ((currentPrice - position.take_profit) / currentPrice * 100)
+
+  return (
+    <Card className="glass-card overflow-hidden group">
+      {/* Top accent bar */}
+      <div className={cn(
+        "h-1",
+        isLong ? "bg-gradient-to-r from-success via-emerald-400 to-success" : "bg-gradient-to-r from-danger via-red-400 to-danger"
+      )} />
+
+      <CardContent className="p-5">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className={cn(
+              "w-12 h-12 rounded-xl flex items-center justify-center shadow-lg",
+              symbol === 'BTC' ? "bg-gradient-to-br from-yellow-500 to-orange-500" : "bg-gradient-to-br from-blue-500 to-purple-500"
+            )}>
+              {symbol === 'BTC' ? <Bitcoin className="w-6 h-6 text-white" /> : <Layers className="w-6 h-6 text-white" />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold">{symbol}-PERP</h3>
+                <SignalBadge action={position.direction} />
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                <Timer className="w-3 h-3" />
+                <span>Open for {timeString}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Unrealized P&L */}
+          <div className={cn(
+            "text-right p-3 rounded-xl",
+            isProfitable ? "bg-success/10" : "bg-danger/10"
+          )}>
+            <p className="text-xs text-muted-foreground mb-0.5">Unrealized P&L</p>
+            <p className={cn(
+              "text-xl font-bold tabular-nums",
+              isProfitable ? "text-success" : "text-danger"
+            )}>
+              {isProfitable ? '+' : ''}{formatCurrency(unrealizedPnL)}
+            </p>
+            <p className={cn(
+              "text-xs font-medium tabular-nums",
+              isProfitable ? "text-success/70" : "text-danger/70"
+            )}>
+              {isProfitable ? '+' : ''}{unrealizedPnLPct.toFixed(2)}%
+            </p>
+          </div>
+        </div>
+
+        {/* Price Progress Bar */}
+        <div className="mb-4">
+          <PositionProgressBar
+            currentPrice={currentPrice}
+            entryPrice={entryPrice}
+            stopLoss={position.stop_loss}
+            takeProfit={position.take_profit}
+            direction={position.direction}
+          />
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="p-3 rounded-xl bg-secondary/50">
+            <p className="text-xs text-muted-foreground">Entry Price</p>
+            <p className="font-semibold tabular-nums">{formatCurrency(entryPrice)}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-secondary/50">
+            <p className="text-xs text-muted-foreground">Current Price</p>
+            <p className={cn("font-semibold tabular-nums", isProfitable ? "text-success" : "text-danger")}>
+              {formatCurrency(currentPrice)}
+            </p>
+          </div>
+          <div className="p-3 rounded-xl bg-secondary/50">
+            <p className="text-xs text-muted-foreground">Position Size</p>
+            <p className="font-semibold tabular-nums">{formatCurrency(position.value)}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-secondary/50">
+            <p className="text-xs text-muted-foreground">Leverage</p>
+            <p className="font-semibold">{position.leverage || '1'}x</p>
+          </div>
+        </div>
+
+        {/* Risk Metrics */}
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <div className="p-3 rounded-xl bg-danger/5 border border-danger/10">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-danger/70">Distance to SL</p>
+                <p className="font-semibold text-danger tabular-nums">{distanceToSL.toFixed(2)}%</p>
+              </div>
+              <Crosshair className="w-4 h-4 text-danger/50" />
+            </div>
+          </div>
+          <div className="p-3 rounded-xl bg-success/5 border border-success/10">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-success/70">Distance to TP</p>
+                <p className="font-semibold text-success tabular-nums">{distanceToTP.toFixed(2)}%</p>
+              </div>
+              <Target className="w-4 h-4 text-success/50" />
+            </div>
+          </div>
+        </div>
+
+        {/* Trade Info */}
+        {position.strategy && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+            <Brain className="w-3 h-3" />
+            <span>Strategy: {position.strategy}</span>
+            <span className="text-border">|</span>
+            <span>Regime: {position.regime}</span>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 // Asset Signal Card
 const AssetSignalCard = ({ symbol, signal }) => {
   if (!signal) return null
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="glass-card overflow-hidden group hover:scale-[1.01] transition-all duration-300">
       <div className={cn(
         "h-1",
-        signal.action === 'LONG' ? "bg-success" :
-        signal.action === 'SHORT' ? "bg-danger" :
-        "bg-muted"
+        signal.action === 'LONG' ? "bg-gradient-to-r from-success to-emerald-400" :
+        signal.action === 'SHORT' ? "bg-gradient-to-r from-danger to-red-400" :
+        "bg-gradient-to-r from-muted to-muted-foreground/20"
       )} />
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className={cn(
-              "w-10 h-10 rounded-xl flex items-center justify-center",
+              "w-10 h-10 rounded-xl flex items-center justify-center shadow-lg",
               symbol === 'BTC' ? "bg-gradient-to-br from-yellow-500 to-orange-500" : "bg-gradient-to-br from-blue-500 to-purple-500"
             )}>
               {symbol === 'BTC' ? <Bitcoin className="w-5 h-5 text-white" /> : <Layers className="w-5 h-5 text-white" />}
             </div>
             <div>
               <CardTitle className="text-lg">{symbol}-PERP</CardTitle>
-              <CardDescription>{formatCurrency(signal.price)}</CardDescription>
+              <CardDescription className="tabular-nums">{formatCurrency(signal.price)}</CardDescription>
             </div>
           </div>
           <SignalBadge action={signal.action} />
         </div>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-2 gap-3 mt-2">
-          <div className="p-3 rounded-lg bg-secondary/50">
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <div className="p-2.5 rounded-lg bg-secondary/50">
             <p className="text-xs text-muted-foreground">Regime</p>
             <p className="font-semibold capitalize">{signal.regime}</p>
           </div>
-          <div className="p-3 rounded-lg bg-secondary/50">
+          <div className="p-2.5 rounded-lg bg-secondary/50">
             <p className="text-xs text-muted-foreground">Confidence</p>
-            <p className="font-semibold">{formatPercent(signal.confidence || 0)}</p>
+            <div className="flex items-center gap-2">
+              <p className="font-semibold">{formatPercent(signal.confidence || 0)}</p>
+              <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    signal.confidence >= 0.7 ? "bg-success" : signal.confidence >= 0.5 ? "bg-warning" : "bg-danger"
+                  )}
+                  style={{ width: `${(signal.confidence || 0) * 100}%` }}
+                />
+              </div>
+            </div>
           </div>
-          <div className="p-3 rounded-lg bg-danger/10">
+          <div className="p-2.5 rounded-lg bg-danger/10">
             <p className="text-xs text-danger">Stop Loss</p>
-            <p className="font-semibold text-danger">{formatCurrency(signal.stop_loss)}</p>
+            <p className="font-semibold text-danger tabular-nums">{formatCurrency(signal.stop_loss)}</p>
           </div>
-          <div className="p-3 rounded-lg bg-success/10">
+          <div className="p-2.5 rounded-lg bg-success/10">
             <p className="text-xs text-success">Take Profit</p>
-            <p className="font-semibold text-success">{formatCurrency(signal.take_profit)}</p>
+            <p className="font-semibold text-success tabular-nums">{formatCurrency(signal.take_profit)}</p>
           </div>
         </div>
 
@@ -201,7 +482,39 @@ const AssetSignalCard = ({ symbol, signal }) => {
   )
 }
 
-// Main App Component
+// Risk Gauge Component
+const RiskGauge = ({ currentDrawdown, maxDrawdown = 20 }) => {
+  const percentage = Math.min((currentDrawdown / maxDrawdown) * 100, 100)
+  const riskLevel = percentage < 30 ? 'low' : percentage < 60 ? 'medium' : 'high'
+
+  return (
+    <div className="relative w-full">
+      <div className="flex justify-between text-xs mb-2">
+        <span className="text-muted-foreground">Drawdown Risk</span>
+        <span className={cn(
+          "font-semibold",
+          riskLevel === 'low' ? "text-success" : riskLevel === 'medium' ? "text-warning" : "text-danger"
+        )}>
+          {currentDrawdown.toFixed(1)}% / {maxDrawdown}%
+        </span>
+      </div>
+      <div className="h-2 bg-secondary rounded-full overflow-hidden">
+        <div className="h-full bg-gradient-to-r from-success via-warning to-danger" />
+        <div
+          className="h-full bg-background absolute top-0 right-0 transition-all duration-500"
+          style={{ width: `${100 - percentage}%` }}
+        />
+      </div>
+      <div className="flex justify-between text-xs mt-1 text-muted-foreground">
+        <span>Safe</span>
+        <span>Caution</span>
+        <span>Danger</span>
+      </div>
+    </div>
+  )
+}
+
+// Main App
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [password, setPassword] = useState('')
@@ -297,34 +610,35 @@ export default function App() {
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-background via-background to-primary/5">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/10 via-transparent to-transparent" />
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute -top-1/2 -left-1/2 w-full h-full bg-gradient-to-br from-primary/20 to-transparent rounded-full blur-3xl animate-pulse" />
+          <div className="absolute -bottom-1/2 -right-1/2 w-full h-full bg-gradient-to-tl from-purple-500/20 to-transparent rounded-full blur-3xl animate-pulse delay-1000" />
+        </div>
 
-        <Card className="w-full max-w-md relative overflow-hidden border-primary/20">
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent" />
-
+        <Card className="w-full max-w-md relative glass-card border-primary/20">
           <CardHeader className="text-center relative">
-            <div className="mx-auto mb-4 w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center shadow-lg shadow-primary/25">
-              <BarChart3 className="w-8 h-8 text-white" />
+            <div className="mx-auto mb-4 w-20 h-20 rounded-2xl bg-gradient-to-br from-primary via-purple-500 to-pink-500 flex items-center justify-center shadow-2xl shadow-primary/30 animate-float">
+              <BarChart3 className="w-10 h-10 text-white" />
             </div>
-            <CardTitle className="text-2xl font-bold bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text">
+            <CardTitle className="text-3xl font-bold bg-gradient-to-r from-foreground via-foreground/80 to-foreground bg-clip-text">
               Trading Bot
             </CardTitle>
             <CardDescription className="text-muted-foreground">
-              Enter your password to access the dashboard
+              Intelligent Trading Dashboard
             </CardDescription>
           </CardHeader>
 
           <CardContent className="relative">
             <div className="space-y-4">
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <div className="relative group">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground transition-colors group-focus-within:text-primary" />
                 <input
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && authenticate()}
-                  placeholder="Password"
-                  className="w-full pl-10 pr-10 py-3 rounded-xl border bg-secondary/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                  placeholder="Enter password"
+                  className="w-full pl-10 pr-10 py-3 rounded-xl border bg-secondary/50 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                 />
                 <button
                   type="button"
@@ -337,7 +651,7 @@ export default function App() {
 
               <Button
                 onClick={authenticate}
-                className="w-full py-6 bg-gradient-to-r from-primary to-purple-500 hover:from-primary/90 hover:to-purple-500/90 shadow-lg shadow-primary/25"
+                className="w-full py-6 bg-gradient-to-r from-primary via-purple-500 to-pink-500 hover:opacity-90 shadow-lg shadow-primary/25 transition-all hover:shadow-xl hover:shadow-primary/30"
                 disabled={loading}
               >
                 {loading ? (
@@ -349,7 +663,7 @@ export default function App() {
               </Button>
 
               {error && (
-                <div className="flex items-center gap-2 p-3 rounded-lg bg-danger/10 border border-danger/20">
+                <div className="flex items-center gap-2 p-3 rounded-xl bg-danger/10 border border-danger/20 animate-shake">
                   <AlertCircle className="w-4 h-4 text-danger" />
                   <p className="text-sm text-danger">{error}</p>
                 </div>
@@ -358,7 +672,7 @@ export default function App() {
 
             <div className="mt-6 pt-6 border-t border-border/50">
               <p className="text-xs text-center text-muted-foreground">
-                Protected access • Updates every 4 hours
+                Protected access • Drift Protocol • Paper Trading
               </p>
             </div>
           </CardContent>
@@ -377,17 +691,37 @@ export default function App() {
   const safetyStatus = data?.state?.safetyStatus || {}
   const decisionLog = data?.state?.decisions || state.decision_log || []
 
-  // Calculate equity curve from trades
-  const equityCurve = trades.reduce((acc, trade, i) => {
+  // Calculate metrics
+  const totalPnL = state.total_pnl || 0
+  const capital = state.capital || 500
+  const peakCapital = state.risk_state?.peak || 500
+  const currentDrawdown = peakCapital > 0 ? ((peakCapital - capital) / peakCapital) * 100 : 0
+  const openPositionsCount = Object.keys(openPositions).length
+
+  // Calculate total unrealized P&L
+  const totalUnrealizedPnL = Object.entries(openPositions).reduce((sum, [symbol, pos]) => {
+    const currentPrice = lastSignals[symbol]?.price || pos.entry_price
+    const isLong = pos.direction === 'LONG'
+    const priceDiff = currentPrice - pos.entry_price
+    const pnl = isLong ? priceDiff * (pos.value / pos.entry_price) : -priceDiff * (pos.value / pos.entry_price)
+    return sum + pnl
+  }, 0)
+
+  // Equity curve
+  const equityCurve = trades.reduce((acc, trade) => {
     const prevEquity = acc.length > 0 ? acc[acc.length - 1].equity : 500
     const pnl = trade.pnl || 0
     acc.push({
-      date: new Date(trade.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      date: new Date(trade.timestamp || trade.exit_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
       equity: prevEquity + pnl,
-      pnl
+      pnl,
+      value: prevEquity + pnl
     })
     return acc
-  }, [{ date: 'Start', equity: 500, pnl: 0 }])
+  }, [{ date: 'Start', equity: 500, pnl: 0, value: 500 }])
+
+  // P&L sparkline data
+  const pnlSparkData = equityCurve.map(d => ({ value: d.equity }))
 
   // Regime distribution
   const regimeData = trades.reduce((acc, trade) => {
@@ -397,17 +731,40 @@ export default function App() {
   }, {})
   const regimePieData = Object.entries(regimeData).map(([name, value]) => ({ name, value }))
 
-  // Direction distribution
-  const directionData = trades.reduce((acc, trade) => {
-    const action = trade.action || 'HOLD'
-    acc[action] = (acc[action] || 0) + 1
+  // Daily P&L chart
+  const dailyPnLData = trades.reduce((acc, trade) => {
+    const date = new Date(trade.exit_time || trade.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    acc[date] = (acc[date] || 0) + (trade.pnl || 0)
     return acc
   }, {})
+  const dailyPnL = Object.entries(dailyPnLData).map(([date, pnl]) => ({ date, pnl }))
+
+  // Drawdown chart
+  let drawdownPeak = 500
+  const drawdownData = equityCurve.map(point => {
+    drawdownPeak = Math.max(drawdownPeak, point.equity)
+    const dd = ((drawdownPeak - point.equity) / drawdownPeak) * 100
+    return { date: point.date, drawdown: -dd, equity: point.equity }
+  })
+
+  const tabs = [
+    { id: 'overview', label: 'Overview', icon: Activity },
+    { id: 'positions', label: 'Positions', icon: Crosshair, badge: openPositionsCount },
+    { id: 'signals', label: 'Signals', icon: Zap },
+    { id: 'trades', label: 'Trades', icon: Clock },
+    { id: 'analytics', label: 'Analytics', icon: PieChartIcon },
+  ]
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Animated background */}
+      <div className="fixed inset-0 -z-10 overflow-hidden">
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-primary/5 rounded-full blur-3xl" />
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-purple-500/5 rounded-full blur-3xl" />
+      </div>
+
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-xl">
+      <header className="sticky top-0 z-50 border-b glass-panel">
         <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -419,13 +776,16 @@ export default function App() {
               </button>
 
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center shadow-lg shadow-primary/25">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-primary/25">
                   <BarChart3 className="w-5 h-5 text-white" />
                 </div>
                 <div className="hidden sm:block">
                   <h1 className="text-lg font-bold">Trading Bot</h1>
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+                    </span>
                     <span className="text-xs text-muted-foreground">Paper Trading</span>
                   </div>
                 </div>
@@ -434,12 +794,11 @@ export default function App() {
 
             {/* Live Prices */}
             <div className="hidden md:flex items-center gap-2">
-              {Object.entries(lastSignals).map(([symbol, signal]) => (
+              {Object.entries(lastSignals).filter(([_, signal]) => signal.price != null).map(([symbol, signal]) => (
                 <LivePrice
                   key={symbol}
                   symbol={symbol}
                   price={signal.price}
-                  change={signal.price_change_24h}
                 />
               ))}
             </div>
@@ -448,10 +807,10 @@ export default function App() {
               <span className="hidden sm:block text-xs text-muted-foreground">
                 {lastUpdate ? `Updated ${formatDate(lastUpdate)}` : '--'}
               </span>
-              <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+              <Button variant="outline" size="icon" onClick={refresh} disabled={loading} className="rounded-lg">
                 <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
               </Button>
-              <Button variant="ghost" size="sm" onClick={logout}>
+              <Button variant="ghost" size="icon" onClick={logout} className="rounded-lg">
                 <X className="w-4 h-4" />
               </Button>
             </div>
@@ -463,22 +822,24 @@ export default function App() {
         {/* Sidebar - Mobile */}
         {sidebarOpen && (
           <div className="fixed inset-0 z-40 lg:hidden">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setSidebarOpen(false)} />
-            <nav className="absolute left-0 top-0 bottom-0 w-64 bg-card border-r p-4 space-y-2">
-              {['overview', 'signals', 'trades', 'analytics'].map((tab) => (
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
+            <nav className="absolute left-0 top-0 bottom-0 w-64 glass-panel border-r p-4 space-y-2">
+              {tabs.map((tab) => (
                 <button
-                  key={tab}
-                  onClick={() => { setActiveTab(tab); setSidebarOpen(false) }}
+                  key={tab.id}
+                  onClick={() => { setActiveTab(tab.id); setSidebarOpen(false) }}
                   className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors",
-                    activeTab === tab ? "bg-primary/10 text-primary" : "hover:bg-secondary"
+                    "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all",
+                    activeTab === tab.id ? "bg-primary/10 text-primary" : "hover:bg-secondary"
                   )}
                 >
-                  {tab === 'overview' && <Activity className="w-4 h-4" />}
-                  {tab === 'signals' && <Zap className="w-4 h-4" />}
-                  {tab === 'trades' && <Clock className="w-4 h-4" />}
-                  {tab === 'analytics' && <PieChartIcon className="w-4 h-4" />}
-                  <span className="capitalize">{tab}</span>
+                  <tab.icon className="w-4 h-4" />
+                  <span>{tab.label}</span>
+                  {tab.badge > 0 && (
+                    <span className="ml-auto bg-primary text-primary-foreground text-xs px-2 py-0.5 rounded-full">
+                      {tab.badge}
+                    </span>
+                  )}
                 </button>
               ))}
             </nav>
@@ -486,31 +847,40 @@ export default function App() {
         )}
 
         {/* Sidebar - Desktop */}
-        <nav className="hidden lg:flex flex-col w-64 border-r bg-card/50 p-4 space-y-2 sticky top-[73px] h-[calc(100vh-73px)]">
-          {['overview', 'signals', 'trades', 'analytics'].map((tab) => (
+        <nav className="hidden lg:flex flex-col w-64 border-r glass-panel p-4 space-y-2 sticky top-[73px] h-[calc(100vh-73px)]">
+          {tabs.map((tab) => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-all",
-                activeTab === tab
+                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all",
+                activeTab === tab.id
                   ? "bg-gradient-to-r from-primary/20 to-purple-500/10 text-primary border-l-2 border-primary"
                   : "hover:bg-secondary"
               )}
             >
-              {tab === 'overview' && <Activity className="w-4 h-4" />}
-              {tab === 'signals' && <Zap className="w-4 h-4" />}
-              {tab === 'trades' && <Clock className="w-4 h-4" />}
-              {tab === 'analytics' && <PieChartIcon className="w-4 h-4" />}
-              <span className="capitalize">{tab}</span>
-              <ChevronRight className={cn("w-4 h-4 ml-auto transition-transform", activeTab === tab && "rotate-90")} />
+              <tab.icon className="w-4 h-4" />
+              <span>{tab.label}</span>
+              {tab.badge > 0 && (
+                <span className="ml-auto bg-primary text-primary-foreground text-xs px-2 py-0.5 rounded-full animate-pulse">
+                  {tab.badge}
+                </span>
+              )}
+              <ChevronRight className={cn("w-4 h-4 ml-auto transition-transform", activeTab === tab.id && "rotate-90")} />
             </button>
           ))}
 
           <div className="flex-1" />
 
-          {/* Safety Status in Sidebar */}
-          <Card className="bg-secondary/30">
+          {/* Risk Gauge */}
+          <Card className="glass-card">
+            <CardContent className="p-4">
+              <RiskGauge currentDrawdown={currentDrawdown} maxDrawdown={20} />
+            </CardContent>
+          </Card>
+
+          {/* Safety Status */}
+          <Card className="glass-card">
             <CardContent className="p-4">
               <div className="flex items-center gap-2 mb-2">
                 <Shield className="w-4 h-4 text-muted-foreground" />
@@ -526,7 +896,7 @@ export default function App() {
                 )}
               </div>
               <p className="text-xs text-muted-foreground mt-2">
-                Losses: {state.consecutive_losses || 0}/3
+                Consecutive Losses: {state.consecutive_losses || 0}/3
               </p>
             </CardContent>
           </Card>
@@ -540,13 +910,14 @@ export default function App() {
               {/* Key Metrics */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <MetricCard
-                  title="Capital"
-                  value={formatCurrency(state.capital || 500)}
-                  subtitle={`Peak: ${formatCurrency(state.risk_state?.peak || 500)}`}
+                  title="Portfolio Value"
+                  value={formatCurrency(capital)}
+                  subtitle={`Peak: ${formatCurrency(peakCapital)}`}
                   icon={Wallet}
-                  trend={(state.total_pnl || 0) >= 0 ? 1 : -1}
-                  trendValue={formatCurrency(state.total_pnl || 0)}
-                  color={(state.total_pnl || 0) >= 0 ? 'success' : 'danger'}
+                  trend={totalPnL >= 0 ? 1 : -1}
+                  trendValue={formatCurrency(totalPnL)}
+                  color={totalPnL >= 0 ? 'success' : 'danger'}
+                  sparkData={pnlSparkData}
                 />
                 <MetricCard
                   title="Market Regime"
@@ -559,20 +930,55 @@ export default function App() {
                   }
                 />
                 <MetricCard
-                  title="Total Trades"
-                  value={portfolioSummary.totalTrades || trades.length || state.total_trades || 0}
-                  subtitle={`Open: ${Object.keys(openPositions).length}`}
-                  icon={Target}
-                  color="primary"
+                  title="Open Positions"
+                  value={openPositionsCount}
+                  subtitle={totalUnrealizedPnL !== 0 ?
+                    `Unrealized: ${totalUnrealizedPnL >= 0 ? '+' : ''}${formatCurrency(totalUnrealizedPnL)}` :
+                    'No active trades'}
+                  icon={Crosshair}
+                  color={openPositionsCount > 0 ? (totalUnrealizedPnL >= 0 ? 'success' : 'danger') : 'primary'}
                 />
                 <MetricCard
                   title="Win Rate"
                   value={portfolioSummary.winRate ? formatPercent(portfolioSummary.winRate) : (metrics.win_rate ? formatPercent(metrics.win_rate) : '--')}
                   subtitle={`W: ${portfolioSummary.winningTrades || 0} / L: ${portfolioSummary.losingTrades || 0}`}
-                  icon={TrendUp}
+                  icon={Target}
                   color="success"
                 />
               </div>
+
+              {/* Open Positions Alert */}
+              {openPositionsCount > 0 && (
+                <Card className="glass-card border-primary/30 overflow-hidden">
+                  <div className="h-1 bg-gradient-to-r from-primary via-purple-500 to-pink-500" />
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                          <Flame className="w-5 h-5 text-primary animate-pulse" />
+                        </div>
+                        <div>
+                          <p className="font-semibold">{openPositionsCount} Active Position{openPositionsCount > 1 ? 's' : ''}</p>
+                          <p className="text-sm text-muted-foreground">
+                            Unrealized P&L:
+                            <span className={cn("ml-1 font-semibold", totalUnrealizedPnL >= 0 ? "text-success" : "text-danger")}>
+                              {totalUnrealizedPnL >= 0 ? '+' : ''}{formatCurrency(totalUnrealizedPnL)}
+                            </span>
+                          </p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={() => setActiveTab('positions')}
+                        className="gap-2"
+                      >
+                        View Positions
+                        <ChevronRight className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Asset Signals */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -580,7 +986,7 @@ export default function App() {
                   <AssetSignalCard key={symbol} symbol={symbol} signal={signal} />
                 ))}
                 {Object.keys(lastSignals).length === 0 && (
-                  <Card className="md:col-span-2">
+                  <Card className="md:col-span-2 glass-card">
                     <CardContent className="py-12 text-center">
                       <Activity className="w-12 h-12 mx-auto text-muted-foreground/50 mb-4" />
                       <p className="text-muted-foreground">No signal data available yet</p>
@@ -590,111 +996,98 @@ export default function App() {
                 )}
               </div>
 
-              {/* Open Positions */}
-              {Object.keys(openPositions).length > 0 && (
-                <Card className="border-primary/50">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Zap className="w-5 h-5 text-primary" />
-                      Open Positions
-                    </CardTitle>
-                    <CardDescription>Currently active paper trades</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {Object.entries(openPositions).map(([symbol, pos]) => (
-                        <div key={symbol} className="p-4 rounded-xl bg-secondary/50 border border-border">
-                          <div className="flex items-center justify-between mb-3">
-                            <div className="flex items-center gap-3">
-                              <div className={cn(
-                                "w-10 h-10 rounded-xl flex items-center justify-center",
-                                symbol === 'BTC' ? "bg-gradient-to-br from-yellow-500 to-orange-500" : "bg-gradient-to-br from-blue-500 to-purple-500"
-                              )}>
-                                {symbol === 'BTC' ? <Bitcoin className="w-5 h-5 text-white" /> : <Layers className="w-5 h-5 text-white" />}
-                              </div>
-                              <div>
-                                <p className="font-semibold">{symbol}-PERP</p>
-                                <p className="text-xs text-muted-foreground">Opened {formatDate(pos.entry_time)}</p>
-                              </div>
-                            </div>
-                            <SignalBadge action={pos.direction} size="lg" />
-                          </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                            <div className="p-2 rounded-lg bg-background/50">
-                              <p className="text-xs text-muted-foreground">Entry Price</p>
-                              <p className="font-semibold">{formatCurrency(pos.entry_price)}</p>
-                            </div>
-                            <div className="p-2 rounded-lg bg-background/50">
-                              <p className="text-xs text-muted-foreground">Position Size</p>
-                              <p className="font-semibold">{formatCurrency(pos.value)}</p>
-                            </div>
-                            <div className="p-2 rounded-lg bg-danger/10">
-                              <p className="text-xs text-danger">Stop Loss</p>
-                              <p className="font-semibold text-danger">{formatCurrency(pos.stop_loss)}</p>
-                            </div>
-                            <div className="p-2 rounded-lg bg-success/10">
-                              <p className="text-xs text-success">Take Profit</p>
-                              <p className="font-semibold text-success">{formatCurrency(pos.take_profit)}</p>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
+              {/* Equity & Drawdown Charts */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Equity Chart */}
+                {equityCurve.length > 1 && (
+                  <Card className="glass-card">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <TrendingUp className="w-4 h-4 text-primary" />
+                        Equity Curve
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="h-48">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={equityCurve}>
+                            <defs>
+                              <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor={COLORS.primary} stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor={COLORS.primary} stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                            <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={10} />
+                            <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={(v) => `$${v}`} />
+                            <Tooltip content={<CustomTooltip />} />
+                            <Area
+                              type="monotone"
+                              dataKey="equity"
+                              stroke={COLORS.primary}
+                              strokeWidth={2}
+                              fill="url(#equityGradient)"
+                              name="Equity"
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
 
-              {/* Equity Chart */}
-              {equityCurve.length > 1 && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <TrendingUp className="w-5 h-5 text-primary" />
-                      Equity Curve
-                    </CardTitle>
-                    <CardDescription>Portfolio value over time</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={equityCurve}>
-                          <defs>
-                            <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor={COLORS.primary} stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor={COLORS.primary} stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                          <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                          <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickFormatter={(v) => `$${v}`} />
-                          <Tooltip content={<CustomTooltip />} />
-                          <Area
-                            type="monotone"
-                            dataKey="equity"
-                            stroke={COLORS.primary}
-                            strokeWidth={2}
-                            fill="url(#equityGradient)"
-                            name="Equity"
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </CardContent>
-                </Card>
-              )}
+                {/* Drawdown Chart */}
+                {drawdownData.length > 1 && (
+                  <Card className="glass-card">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <TrendingDown className="w-4 h-4 text-danger" />
+                        Drawdown
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="h-48">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={drawdownData}>
+                            <defs>
+                              <linearGradient id="drawdownGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor={COLORS.danger} stopOpacity={0.3}/>
+                                <stop offset="95%" stopColor={COLORS.danger} stopOpacity={0}/>
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                            <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={10} />
+                            <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={(v) => `${v}%`} />
+                            <Tooltip content={<CustomTooltip />} />
+                            <ReferenceLine y={-20} stroke={COLORS.danger} strokeDasharray="5 5" />
+                            <Area
+                              type="monotone"
+                              dataKey="drawdown"
+                              stroke={COLORS.danger}
+                              strokeWidth={2}
+                              fill="url(#drawdownGradient)"
+                              name="Drawdown %"
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
 
-              {/* Recent Activity */}
-              <Card>
+              {/* Recent Decisions */}
+              <Card className="glass-card">
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Clock className="w-5 h-5" />
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Clock className="w-4 h-4" />
                     Recent Decisions
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     {decisionLog.slice(-5).reverse().map((entry, i) => (
-                      <div key={i} className="flex items-center gap-4 p-3 rounded-lg bg-secondary/50 hover:bg-secondary/80 transition-colors">
+                      <div key={i} className="flex items-center gap-4 p-3 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors">
                         <div className={cn(
                           "w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0",
                           entry.action === 'LONG' ? "bg-success/10" :
@@ -714,7 +1107,7 @@ export default function App() {
                           </p>
                         </div>
                         <div className="text-right text-xs text-muted-foreground">
-                          <p>{formatPercent(entry.confidence || 0)}</p>
+                          <p className="font-medium">{formatPercent(entry.confidence || 0)}</p>
                           <p>{new Date(entry.timestamp).toLocaleTimeString()}</p>
                         </div>
                       </div>
@@ -728,177 +1121,311 @@ export default function App() {
             </>
           )}
 
+          {/* Positions Tab */}
+          {activeTab === 'positions' && (
+            <>
+              {/* Summary Stats */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <MetricCard
+                  title="Open Positions"
+                  value={openPositionsCount}
+                  subtitle="Active trades"
+                  icon={Crosshair}
+                  color="primary"
+                />
+                <MetricCard
+                  title="Total Exposure"
+                  value={formatCurrency(Object.values(openPositions).reduce((sum, p) => sum + (p.value || 0), 0))}
+                  subtitle={`${((Object.values(openPositions).reduce((sum, p) => sum + (p.value || 0), 0) / capital) * 100).toFixed(1)}% of capital`}
+                  icon={Gauge}
+                  color="warning"
+                />
+                <MetricCard
+                  title="Unrealized P&L"
+                  value={`${totalUnrealizedPnL >= 0 ? '+' : ''}${formatCurrency(totalUnrealizedPnL)}`}
+                  subtitle="Paper profit/loss"
+                  icon={DollarSign}
+                  color={totalUnrealizedPnL >= 0 ? 'success' : 'danger'}
+                />
+                <MetricCard
+                  title="Avg Position Time"
+                  value={openPositionsCount > 0 ? (() => {
+                    const avgHours = Object.values(openPositions).reduce((sum, p) => {
+                      return sum + (Date.now() - new Date(p.entry_time).getTime()) / (1000 * 60 * 60)
+                    }, 0) / openPositionsCount
+                    return avgHours >= 24 ? `${Math.floor(avgHours / 24)}d` : `${Math.floor(avgHours)}h`
+                  })() : '--'}
+                  subtitle="Holding duration"
+                  icon={Timer}
+                  color="purple"
+                />
+              </div>
+
+              {/* Position Cards */}
+              {openPositionsCount > 0 ? (
+                <div className="space-y-4">
+                  {Object.entries(openPositions).map(([symbol, position]) => (
+                    <PositionCard
+                      key={symbol}
+                      symbol={symbol}
+                      position={position}
+                      currentPrice={lastSignals[symbol]?.price || position.entry_price}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <Card className="glass-card">
+                  <CardContent className="py-16 text-center">
+                    <div className="w-20 h-20 rounded-2xl bg-secondary/50 flex items-center justify-center mx-auto mb-4">
+                      <Crosshair className="w-10 h-10 text-muted-foreground/50" />
+                    </div>
+                    <h3 className="text-lg font-semibold mb-2">No Active Positions</h3>
+                    <p className="text-muted-foreground mb-4">
+                      The bot is waiting for the right market conditions to enter a trade.
+                    </p>
+                    <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                      <Brain className="w-4 h-4" />
+                      <span>Current Regime: <strong className="capitalize">{state.last_regime || 'Unknown'}</strong></span>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Quick Stats */}
+              {trades.length > 0 && (
+                <Card className="glass-card">
+                  <CardHeader>
+                    <CardTitle className="text-base">Position History Stats</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="p-3 rounded-xl bg-secondary/30">
+                        <p className="text-xs text-muted-foreground">Total Trades</p>
+                        <p className="text-xl font-bold">{trades.length}</p>
+                      </div>
+                      <div className="p-3 rounded-xl bg-secondary/30">
+                        <p className="text-xs text-muted-foreground">Avg Holding Time</p>
+                        <p className="text-xl font-bold">
+                          {trades.length > 0 ? (() => {
+                            const avgMs = trades.reduce((sum, t) => {
+                              if (t.entry_time && t.exit_time) {
+                                return sum + (new Date(t.exit_time) - new Date(t.entry_time))
+                              }
+                              return sum
+                            }, 0) / trades.filter(t => t.entry_time && t.exit_time).length
+                            const hours = avgMs / (1000 * 60 * 60)
+                            return hours >= 24 ? `${Math.floor(hours / 24)}d` : `${Math.floor(hours)}h`
+                          })() : '--'}
+                        </p>
+                      </div>
+                      <div className="p-3 rounded-xl bg-success/10">
+                        <p className="text-xs text-success">Best Trade</p>
+                        <p className="text-xl font-bold text-success">
+                          +{formatCurrency(Math.max(...trades.map(t => t.pnl || 0), 0))}
+                        </p>
+                      </div>
+                      <div className="p-3 rounded-xl bg-danger/10">
+                        <p className="text-xs text-danger">Worst Trade</p>
+                        <p className="text-xl font-bold text-danger">
+                          {formatCurrency(Math.min(...trades.map(t => t.pnl || 0), 0))}
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          )}
+
           {/* Signals Tab */}
           {activeTab === 'signals' && (
-            <>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {Object.entries(lastSignals).map(([symbol, signal]) => (
-                  <Card key={symbol} className="overflow-hidden">
-                    <div className={cn(
-                      "h-2",
-                      signal.action === 'LONG' ? "bg-gradient-to-r from-success to-emerald-400" :
-                      signal.action === 'SHORT' ? "bg-gradient-to-r from-danger to-red-400" :
-                      "bg-gradient-to-r from-muted to-muted-foreground/20"
-                    )} />
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                          <div className={cn(
-                            "w-14 h-14 rounded-2xl flex items-center justify-center",
-                            symbol === 'BTC'
-                              ? "bg-gradient-to-br from-yellow-500 to-orange-500"
-                              : "bg-gradient-to-br from-blue-500 to-purple-500"
-                          )}>
-                            {symbol === 'BTC' ? <Bitcoin className="w-7 h-7 text-white" /> : <Layers className="w-7 h-7 text-white" />}
-                          </div>
-                          <div>
-                            <CardTitle className="text-2xl">{symbol}-PERP</CardTitle>
-                            <CardDescription className="text-lg">{formatCurrency(signal.price)}</CardDescription>
-                          </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {Object.entries(lastSignals).map(([symbol, signal]) => (
+                <Card key={symbol} className="glass-card overflow-hidden">
+                  <div className={cn(
+                    "h-2",
+                    signal.action === 'LONG' ? "bg-gradient-to-r from-success via-emerald-400 to-success" :
+                    signal.action === 'SHORT' ? "bg-gradient-to-r from-danger via-red-400 to-danger" :
+                    "bg-gradient-to-r from-muted to-muted-foreground/20"
+                  )} />
+                  <CardHeader>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className={cn(
+                          "w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg",
+                          symbol === 'BTC'
+                            ? "bg-gradient-to-br from-yellow-500 to-orange-500"
+                            : "bg-gradient-to-br from-blue-500 to-purple-500"
+                        )}>
+                          {symbol === 'BTC' ? <Bitcoin className="w-7 h-7 text-white" /> : <Layers className="w-7 h-7 text-white" />}
                         </div>
-                        <SignalBadge action={signal.action} size="lg" />
-                      </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      {/* Signal Details Grid */}
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                        <div className="p-4 rounded-xl bg-secondary/50 text-center">
-                          <p className="text-xs text-muted-foreground mb-1">Regime</p>
-                          <p className="font-bold capitalize">{signal.regime}</p>
-                        </div>
-                        <div className="p-4 rounded-xl bg-secondary/50 text-center">
-                          <p className="text-xs text-muted-foreground mb-1">Confidence</p>
-                          <p className="font-bold">{formatPercent(signal.confidence || 0)}</p>
-                        </div>
-                        <div className="p-4 rounded-xl bg-secondary/50 text-center">
-                          <p className="text-xs text-muted-foreground mb-1">Strength</p>
-                          <p className="font-bold">{signal.strength || '--'}</p>
-                        </div>
-                        <div className="p-4 rounded-xl bg-secondary/50 text-center">
-                          <p className="text-xs text-muted-foreground mb-1">Strategy</p>
-                          <p className="font-bold text-xs">{signal.strategy || '--'}</p>
+                        <div>
+                          <CardTitle className="text-2xl">{symbol}-PERP</CardTitle>
+                          <CardDescription className="text-lg tabular-nums">{formatCurrency(signal.price)}</CardDescription>
                         </div>
                       </div>
+                      <SignalBadge action={signal.action} size="lg" />
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* Signal Details Grid */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="p-4 rounded-xl bg-secondary/30 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Regime</p>
+                        <p className="font-bold capitalize">{signal.regime}</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-secondary/30 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Confidence</p>
+                        <p className="font-bold">{formatPercent(signal.confidence || 0)}</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-secondary/30 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Strength</p>
+                        <p className="font-bold">{signal.strength || '--'}</p>
+                      </div>
+                      <div className="p-4 rounded-xl bg-secondary/30 text-center">
+                        <p className="text-xs text-muted-foreground mb-1">Strategy</p>
+                        <p className="font-bold text-xs">{signal.strategy || '--'}</p>
+                      </div>
+                    </div>
 
-                      {/* Stop/Target */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="p-4 rounded-xl bg-danger/10 border border-danger/20">
-                          <div className="flex items-center gap-2 mb-2">
-                            <ArrowDownRight className="w-4 h-4 text-danger" />
-                            <span className="text-sm text-danger font-medium">Stop Loss</span>
-                          </div>
-                          <p className="text-xl font-bold text-danger">{formatCurrency(signal.stop_loss)}</p>
-                          <p className="text-xs text-danger/70">
-                            {signal.price && signal.stop_loss ?
-                              `${(((signal.stop_loss - signal.price) / signal.price) * 100).toFixed(2)}%` : '--'}
-                          </p>
+                    {/* Stop/Target */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="p-4 rounded-xl bg-danger/10 border border-danger/20">
+                        <div className="flex items-center gap-2 mb-2">
+                          <ArrowDownRight className="w-4 h-4 text-danger" />
+                          <span className="text-sm text-danger font-medium">Stop Loss</span>
                         </div>
-                        <div className="p-4 rounded-xl bg-success/10 border border-success/20">
-                          <div className="flex items-center gap-2 mb-2">
-                            <ArrowUpRight className="w-4 h-4 text-success" />
-                            <span className="text-sm text-success font-medium">Take Profit</span>
-                          </div>
-                          <p className="text-xl font-bold text-success">{formatCurrency(signal.take_profit)}</p>
-                          <p className="text-xs text-success/70">
-                            {signal.price && signal.take_profit ?
-                              `${(((signal.take_profit - signal.price) / signal.price) * 100).toFixed(2)}%` : '--'}
-                          </p>
-                        </div>
+                        <p className="text-xl font-bold text-danger tabular-nums">{formatCurrency(signal.stop_loss)}</p>
+                        <p className="text-xs text-danger/70">
+                          {signal.price && signal.stop_loss ?
+                            `${(((signal.stop_loss - signal.price) / signal.price) * 100).toFixed(2)}%` : '--'}
+                        </p>
                       </div>
-
-                      {/* Reasons */}
-                      <div>
-                        <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-                          <CheckCircle className="w-4 h-4 text-success" />
-                          Signal Reasons
-                        </h4>
-                        <div className="flex flex-wrap gap-2">
-                          {(signal.reasons || []).map((reason, i) => (
-                            <Badge key={i} variant="outline" className="text-xs py-1">
-                              {formatReason(reason)}
-                            </Badge>
-                          ))}
-                          {(!signal.reasons || signal.reasons.length === 0) && (
-                            <span className="text-sm text-muted-foreground">No specific reasons</span>
-                          )}
+                      <div className="p-4 rounded-xl bg-success/10 border border-success/20">
+                        <div className="flex items-center gap-2 mb-2">
+                          <ArrowUpRight className="w-4 h-4 text-success" />
+                          <span className="text-sm text-success font-medium">Take Profit</span>
                         </div>
+                        <p className="text-xl font-bold text-success tabular-nums">{formatCurrency(signal.take_profit)}</p>
+                        <p className="text-xs text-success/70">
+                          {signal.price && signal.take_profit ?
+                            `${(((signal.take_profit - signal.price) / signal.price) * 100).toFixed(2)}%` : '--'}
+                        </p>
                       </div>
+                    </div>
 
-                      {/* Traps */}
-                      <div>
-                        <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-                          <AlertTriangle className="w-4 h-4 text-warning" />
-                          Trap Detection
-                        </h4>
-                        {(signal.traps_detected || []).length > 0 ? (
-                          <div className="space-y-2">
-                            {signal.traps_detected.map((trap, i) => (
-                              <div key={i} className="flex items-center gap-2 p-2 rounded-lg bg-warning/10 border border-warning/20">
-                                <AlertCircle className="w-4 h-4 text-warning" />
-                                <span className="text-sm text-warning">{formatTrap(trap)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2 p-3 rounded-lg bg-success/10">
-                            <CheckCircle className="w-4 h-4 text-success" />
-                            <span className="text-sm text-success">No traps detected</span>
-                          </div>
+                    {/* Reasons */}
+                    <div>
+                      <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                        <CheckCircle className="w-4 h-4 text-success" />
+                        Signal Reasons
+                      </h4>
+                      <div className="flex flex-wrap gap-2">
+                        {(signal.reasons || []).map((reason, i) => (
+                          <Badge key={i} variant="outline" className="text-xs py-1">
+                            {formatReason(reason)}
+                          </Badge>
+                        ))}
+                        {(!signal.reasons || signal.reasons.length === 0) && (
+                          <span className="text-sm text-muted-foreground">No specific reasons</span>
                         )}
                       </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </>
+                    </div>
+
+                    {/* Traps */}
+                    <div>
+                      <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-warning" />
+                        Trap Detection
+                      </h4>
+                      {(signal.traps_detected || []).length > 0 ? (
+                        <div className="space-y-2">
+                          {signal.traps_detected.map((trap, i) => (
+                            <div key={i} className="flex items-center gap-2 p-2 rounded-lg bg-warning/10 border border-warning/20">
+                              <AlertCircle className="w-4 h-4 text-warning" />
+                              <span className="text-sm text-warning">{formatTrap(trap)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 p-3 rounded-lg bg-success/10">
+                          <CheckCircle className="w-4 h-4 text-success" />
+                          <span className="text-sm text-success">No traps detected</span>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              {Object.keys(lastSignals).length === 0 && (
+                <Card className="col-span-full glass-card">
+                  <CardContent className="py-16 text-center">
+                    <Zap className="w-16 h-16 mx-auto text-muted-foreground/30 mb-4" />
+                    <p className="text-lg font-medium text-muted-foreground">No signals available</p>
+                    <p className="text-sm text-muted-foreground mt-1">Waiting for next trading cycle</p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           )}
 
           {/* Trades Tab */}
           {activeTab === 'trades' && (
-            <Card>
+            <Card className="glass-card">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Clock className="w-5 h-5" />
-                  Trade History
-                </CardTitle>
-                <CardDescription>
-                  Closed trades with P&L ({trades.length} total)
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Clock className="w-5 h-5" />
+                      Trade History
+                    </CardTitle>
+                    <CardDescription>
+                      Closed trades with P&L ({trades.length} total)
+                    </CardDescription>
+                  </div>
                   {trades.length > 0 && (
-                    <span className={cn("ml-2 font-semibold",
-                      trades.reduce((sum, t) => sum + (t.pnl || 0), 0) >= 0 ? "text-success" : "text-danger"
+                    <div className={cn(
+                      "text-right p-3 rounded-xl",
+                      trades.reduce((sum, t) => sum + (t.pnl || 0), 0) >= 0 ? "bg-success/10" : "bg-danger/10"
                     )}>
-                      Total: {formatCurrency(trades.reduce((sum, t) => sum + (t.pnl || 0), 0))}
-                    </span>
+                      <p className="text-xs text-muted-foreground">Total P&L</p>
+                      <p className={cn(
+                        "text-xl font-bold tabular-nums",
+                        trades.reduce((sum, t) => sum + (t.pnl || 0), 0) >= 0 ? "text-success" : "text-danger"
+                      )}>
+                        {trades.reduce((sum, t) => sum + (t.pnl || 0), 0) >= 0 ? '+' : ''}
+                        {formatCurrency(trades.reduce((sum, t) => sum + (t.pnl || 0), 0))}
+                      </p>
+                    </div>
                   )}
-                </CardDescription>
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border">
-                        <th className="text-left p-4 text-muted-foreground font-medium">Entry/Exit</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Symbol</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Direction</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Entry</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Exit</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Size</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">P&L</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Exit Reason</th>
-                        <th className="text-left p-4 text-muted-foreground font-medium">Regime</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">Date</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">Symbol</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">Side</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">Entry</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">Exit</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">Size</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">P&L</th>
+                        <th className="text-left p-3 text-muted-foreground font-medium">Reason</th>
                       </tr>
                     </thead>
                     <tbody>
                       {trades.slice().reverse().map((trade, i) => (
-                        <tr key={i} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
-                          <td className="p-4 text-muted-foreground text-xs">
+                        <tr key={i} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                          <td className="p-3 text-muted-foreground text-xs">
                             <div>{trade.entry_time ? new Date(trade.entry_time).toLocaleDateString() : '--'}</div>
-                            <div className="text-muted-foreground/70">{trade.exit_time ? new Date(trade.exit_time).toLocaleDateString() : '--'}</div>
+                            <div className="text-muted-foreground/70">{trade.exit_time ? new Date(trade.exit_time).toLocaleDateString() : 'Open'}</div>
                           </td>
-                          <td className="p-4">
+                          <td className="p-3">
                             <div className="flex items-center gap-2">
                               <div className={cn(
-                                "w-6 h-6 rounded-full flex items-center justify-center",
+                                "w-6 h-6 rounded-lg flex items-center justify-center",
                                 trade.symbol === 'BTC' ? "bg-yellow-500" : "bg-blue-500"
                               )}>
                                 {trade.symbol === 'BTC' ? <Bitcoin className="w-3 h-3 text-white" /> : <Layers className="w-3 h-3 text-white" />}
@@ -906,27 +1433,29 @@ export default function App() {
                               <span className="font-medium">{trade.symbol}</span>
                             </div>
                           </td>
-                          <td className="p-4">
+                          <td className="p-3">
                             <SignalBadge action={trade.direction || trade.action} />
                           </td>
-                          <td className="p-4 font-mono">{formatCurrency(trade.entry_price || trade.price)}</td>
-                          <td className="p-4 font-mono">{formatCurrency(trade.exit_price)}</td>
-                          <td className="p-4 font-mono">{formatCurrency(trade.value)}</td>
-                          <td className="p-4">
+                          <td className="p-3 font-mono tabular-nums">{formatCurrency(trade.entry_price || trade.price)}</td>
+                          <td className="p-3 font-mono tabular-nums">{trade.exit_price ? formatCurrency(trade.exit_price) : '--'}</td>
+                          <td className="p-3 font-mono tabular-nums">{formatCurrency(trade.value)}</td>
+                          <td className="p-3">
                             <div className={cn(
-                              "font-semibold",
+                              "font-semibold tabular-nums",
                               (trade.pnl || 0) >= 0 ? "text-success" : "text-danger"
                             )}>
                               {(trade.pnl || 0) >= 0 ? '+' : ''}{formatCurrency(trade.pnl || 0)}
                             </div>
-                            <div className={cn(
-                              "text-xs",
-                              (trade.pnl_pct || 0) >= 0 ? "text-success/70" : "text-danger/70"
-                            )}>
-                              {(trade.pnl_pct || 0) >= 0 ? '+' : ''}{trade.pnl_pct || 0}%
-                            </div>
+                            {trade.pnl_pct !== undefined && (
+                              <div className={cn(
+                                "text-xs tabular-nums",
+                                (trade.pnl_pct || 0) >= 0 ? "text-success/70" : "text-danger/70"
+                              )}>
+                                {(trade.pnl_pct || 0) >= 0 ? '+' : ''}{trade.pnl_pct}%
+                              </div>
+                            )}
                           </td>
-                          <td className="p-4">
+                          <td className="p-3">
                             <Badge variant={
                               trade.exit_reason === 'take_profit' ? 'success' :
                               trade.exit_reason === 'stop_loss' ? 'danger' : 'secondary'
@@ -937,17 +1466,14 @@ export default function App() {
                                trade.exit_reason || 'Open'}
                             </Badge>
                           </td>
-                          <td className="p-4">
-                            <Badge variant="secondary" className="capitalize">{trade.regime}</Badge>
-                          </td>
                         </tr>
                       ))}
                       {trades.length === 0 && (
                         <tr>
-                          <td colSpan={9} className="p-12 text-center text-muted-foreground">
-                            <Clock className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                            <p>No closed trades yet</p>
-                            <p className="text-xs mt-1">Trades will appear here when positions are closed (SL/TP hit or opposite signal)</p>
+                          <td colSpan={8} className="p-12 text-center text-muted-foreground">
+                            <Clock className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                            <p className="font-medium">No closed trades yet</p>
+                            <p className="text-xs mt-1">Trades will appear here when positions are closed</p>
                           </td>
                         </tr>
                       )}
@@ -994,12 +1520,39 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Daily P&L Chart */}
+                {dailyPnL.length > 0 && (
+                  <Card className="glass-card">
+                    <CardHeader>
+                      <CardTitle className="text-base">Daily P&L</CardTitle>
+                      <CardDescription>Profit and loss by day</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={dailyPnL}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                            <XAxis dataKey="date" stroke="hsl(var(--muted-foreground))" fontSize={10} />
+                            <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={(v) => `$${v}`} />
+                            <Tooltip content={<CustomTooltip />} />
+                            <Bar dataKey="pnl" name="P&L" radius={[4, 4, 0, 0]}>
+                              {dailyPnL.map((entry, index) => (
+                                <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? COLORS.success : COLORS.danger} />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
                 {/* Regime Distribution */}
                 {regimePieData.length > 0 && (
-                  <Card>
+                  <Card className="glass-card">
                     <CardHeader>
-                      <CardTitle>Trades by Regime</CardTitle>
-                      <CardDescription>Distribution of trades across market regimes</CardDescription>
+                      <CardTitle className="text-base">Trades by Regime</CardTitle>
+                      <CardDescription>Distribution across market conditions</CardDescription>
                     </CardHeader>
                     <CardContent>
                       <div className="h-64">
@@ -1030,7 +1583,7 @@ export default function App() {
                           </PieChart>
                         </ResponsiveContainer>
                       </div>
-                      <div className="flex justify-center gap-4 mt-4">
+                      <div className="flex justify-center gap-4 mt-4 flex-wrap">
                         {regimePieData.map((entry, i) => (
                           <div key={i} className="flex items-center gap-2">
                             <div
@@ -1048,46 +1601,79 @@ export default function App() {
                     </CardContent>
                   </Card>
                 )}
-
-                {/* Direction Distribution */}
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Trade Directions</CardTitle>
-                    <CardDescription>Long vs Short distribution</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={Object.entries(directionData).map(([name, value]) => ({ name, value }))}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                          <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" />
-                          <YAxis stroke="hsl(var(--muted-foreground))" />
-                          <Tooltip content={<CustomTooltip />} />
-                          <Bar dataKey="value" fill={COLORS.primary} radius={[4, 4, 0, 0]}>
-                            {Object.entries(directionData).map(([name], index) => (
-                              <Cell
-                                key={`cell-${index}`}
-                                fill={name.includes('LONG') ? COLORS.success : name.includes('SHORT') ? COLORS.danger : COLORS.primary}
-                              />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </CardContent>
-                </Card>
               </div>
 
-              {/* Decision Log */}
-              <Card>
+              {/* Advanced Metrics */}
+              <Card className="glass-card">
                 <CardHeader>
-                  <CardTitle>Full Decision Log</CardTitle>
+                  <CardTitle className="text-base">Advanced Statistics</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                    <div className="p-4 rounded-xl bg-secondary/30">
+                      <p className="text-xs text-muted-foreground">Total Trades</p>
+                      <p className="text-xl font-bold">{trades.length}</p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-secondary/30">
+                      <p className="text-xs text-muted-foreground">Win Rate</p>
+                      <p className="text-xl font-bold">
+                        {trades.length > 0 ? `${((trades.filter(t => (t.pnl || 0) > 0).length / trades.length) * 100).toFixed(1)}%` : '--'}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-success/10">
+                      <p className="text-xs text-success">Avg Win</p>
+                      <p className="text-xl font-bold text-success">
+                        {trades.filter(t => (t.pnl || 0) > 0).length > 0 ?
+                          formatCurrency(trades.filter(t => (t.pnl || 0) > 0).reduce((sum, t) => sum + t.pnl, 0) / trades.filter(t => (t.pnl || 0) > 0).length) : '--'}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-danger/10">
+                      <p className="text-xs text-danger">Avg Loss</p>
+                      <p className="text-xl font-bold text-danger">
+                        {trades.filter(t => (t.pnl || 0) < 0).length > 0 ?
+                          formatCurrency(trades.filter(t => (t.pnl || 0) < 0).reduce((sum, t) => sum + t.pnl, 0) / trades.filter(t => (t.pnl || 0) < 0).length) : '--'}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-secondary/30">
+                      <p className="text-xs text-muted-foreground">Longest Win Streak</p>
+                      <p className="text-xl font-bold">
+                        {(() => {
+                          let max = 0, current = 0
+                          trades.forEach(t => {
+                            if ((t.pnl || 0) > 0) { current++; max = Math.max(max, current) }
+                            else { current = 0 }
+                          })
+                          return max
+                        })()}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl bg-secondary/30">
+                      <p className="text-xs text-muted-foreground">Longest Loss Streak</p>
+                      <p className="text-xl font-bold">
+                        {(() => {
+                          let max = 0, current = 0
+                          trades.forEach(t => {
+                            if ((t.pnl || 0) < 0) { current++; max = Math.max(max, current) }
+                            else { current = 0 }
+                          })
+                          return max
+                        })()}
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Decision Log */}
+              <Card className="glass-card">
+                <CardHeader>
+                  <CardTitle className="text-base">Decision Log</CardTitle>
                   <CardDescription>Complete history of trading decisions</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2 max-h-96 overflow-y-auto">
                     {decisionLog.slice().reverse().map((entry, i) => (
-                      <div key={i} className="p-4 rounded-lg bg-secondary/50 hover:bg-secondary/80 transition-colors">
+                      <div key={i} className="p-4 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-colors">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-3">
                             <span className="text-xs text-muted-foreground">{formatDate(entry.timestamp)}</span>
@@ -1134,18 +1720,21 @@ export default function App() {
       </div>
 
       {/* Footer */}
-      <footer className="border-t py-6 mt-auto">
+      <footer className="border-t glass-panel py-6 mt-auto">
         <div className="container mx-auto px-4">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-purple-500 flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary via-purple-500 to-pink-500 flex items-center justify-center">
                 <BarChart3 className="w-4 h-4 text-white" />
               </div>
-              <span className="text-sm font-medium">Trading Bot v2.0</span>
+              <span className="text-sm font-medium">Trading Bot v3.2</span>
             </div>
             <div className="flex items-center gap-4 text-sm text-muted-foreground">
               <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+                </span>
                 Paper Trading
               </span>
               <span>•</span>
@@ -1156,6 +1745,43 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Global Styles */}
+      <style>{`
+        .glass-panel {
+          background: hsl(var(--background) / 0.8);
+          backdrop-filter: blur(12px);
+        }
+
+        .glass-card {
+          background: hsl(var(--card) / 0.6);
+          backdrop-filter: blur(12px);
+          border: 1px solid hsl(var(--border) / 0.5);
+        }
+
+        @keyframes float {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-10px); }
+        }
+
+        .animate-float {
+          animation: float 3s ease-in-out infinite;
+        }
+
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          25% { transform: translateX(-5px); }
+          75% { transform: translateX(5px); }
+        }
+
+        .animate-shake {
+          animation: shake 0.3s ease-in-out;
+        }
+
+        .tabular-nums {
+          font-variant-numeric: tabular-nums;
+        }
+      `}</style>
     </div>
   )
 }
