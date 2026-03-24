@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 
 const API_BASE = '/api'
+const INITIAL_CAPITAL = 500 // Default initial capital
 
 // Theme colors
 const COLORS = {
@@ -31,35 +32,50 @@ const COLORS = {
 // Animated number component
 const AnimatedNumber = ({ value, prefix = '', suffix = '', decimals = 2 }) => {
   const [displayValue, setDisplayValue] = useState(value)
+  const prevValueRef = useRef(value)
 
   useEffect(() => {
-    const duration = 500
-    const start = displayValue
+    const start = prevValueRef.current
     const end = value
+    prevValueRef.current = value
+
+    if (start === end) return
+
+    const duration = 500
     const startTime = Date.now()
+    let animationId
 
     const animate = () => {
       const now = Date.now()
       const progress = Math.min((now - startTime) / duration, 1)
       const eased = 1 - Math.pow(1 - progress, 3)
       setDisplayValue(start + (end - start) * eased)
-      if (progress < 1) requestAnimationFrame(animate)
+      if (progress < 1) {
+        animationId = requestAnimationFrame(animate)
+      }
     }
     animate()
+
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId)
+    }
   }, [value])
 
   return <span>{prefix}{displayValue.toFixed(decimals)}{suffix}</span>
 }
 
 // Sparkline component
+let sparklineIdCounter = 0
 const Sparkline = ({ data, color = COLORS.primary, height = 40 }) => {
+  const [gradientId] = useState(() => `spark-${++sparklineIdCounter}`)
+
   if (!data || data.length < 2) return null
 
   return (
     <ResponsiveContainer width="100%" height={height}>
       <AreaChart data={data}>
         <defs>
-          <linearGradient id={`spark-${color}`} x1="0" y1="0" x2="0" y2="1">
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={color} stopOpacity={0.3} />
             <stop offset="100%" stopColor={color} stopOpacity={0} />
           </linearGradient>
@@ -69,7 +85,7 @@ const Sparkline = ({ data, color = COLORS.primary, height = 40 }) => {
           dataKey="value"
           stroke={color}
           strokeWidth={1.5}
-          fill={`url(#spark-${color})`}
+          fill={`url(#${gradientId})`}
           isAnimationActive={false}
         />
       </AreaChart>
@@ -255,13 +271,15 @@ const LivePrice = ({ symbol, price, change }) => (
 
 // Position Card (for Active Positions tab)
 const PositionCard = ({ symbol, position, currentPrice }) => {
-  if (!position) return null
+  if (!position || !position.entry_price) return null
 
   const entryPrice = position.entry_price
   const isLong = position.direction === 'LONG'
   const priceDiff = currentPrice - entryPrice
-  const unrealizedPnL = isLong ? priceDiff * (position.value / entryPrice) : -priceDiff * (position.value / entryPrice)
-  const unrealizedPnLPct = (unrealizedPnL / position.value) * 100
+  // Use size if available, otherwise calculate from value/entry_price
+  const positionSize = position.size || (position.value / entryPrice)
+  const unrealizedPnL = isLong ? priceDiff * positionSize : -priceDiff * positionSize
+  const unrealizedPnLPct = position.value > 0 ? (unrealizedPnL / position.value) * 100 : 0
   const isProfitable = unrealizedPnL >= 0
 
   // Time open
@@ -271,13 +289,13 @@ const PositionCard = ({ symbol, position, currentPrice }) => {
   const daysOpen = Math.floor(hoursOpen / 24)
   const timeString = daysOpen > 0 ? `${daysOpen}d ${hoursOpen % 24}h` : `${hoursOpen}h`
 
-  // Distance to SL/TP
-  const distanceToSL = isLong
+  // Distance to SL/TP (always positive, showing how far away)
+  const distanceToSL = Math.abs(isLong
     ? ((currentPrice - position.stop_loss) / currentPrice * 100)
-    : ((position.stop_loss - currentPrice) / currentPrice * 100)
-  const distanceToTP = isLong
+    : ((position.stop_loss - currentPrice) / currentPrice * 100))
+  const distanceToTP = Math.abs(isLong
     ? ((position.take_profit - currentPrice) / currentPrice * 100)
-    : ((currentPrice - position.take_profit) / currentPrice * 100)
+    : ((currentPrice - position.take_profit) / currentPrice * 100))
 
   return (
     <Card className="glass-card overflow-hidden group">
@@ -437,14 +455,18 @@ const AssetSignalCard = ({ symbol, signal }) => {
           <div className="p-2.5 rounded-lg bg-secondary/50">
             <p className="text-xs text-muted-foreground">Confidence</p>
             <div className="flex items-center gap-2">
-              <p className="font-semibold">{formatPercent(signal.confidence || 0)}</p>
+              <p className="font-semibold">{(() => {
+                const conf = signal.confidence || 0
+                // Handle both 0-1 and 0-100 formats
+                return conf > 1 ? `${conf.toFixed(0)}%` : formatPercent(conf)
+              })()}</p>
               <div className="flex-1 h-1.5 bg-secondary rounded-full overflow-hidden">
                 <div
                   className={cn(
                     "h-full rounded-full transition-all",
-                    signal.confidence >= 0.7 ? "bg-success" : signal.confidence >= 0.5 ? "bg-warning" : "bg-danger"
+                    (signal.confidence || 0) >= 0.7 ? "bg-success" : (signal.confidence || 0) >= 0.5 ? "bg-warning" : "bg-danger"
                   )}
-                  style={{ width: `${(signal.confidence || 0) * 100}%` }}
+                  style={{ width: `${((signal.confidence || 0) > 1 ? signal.confidence : (signal.confidence || 0) * 100)}%` }}
                 />
               </div>
             </div>
@@ -488,7 +510,7 @@ const RiskGauge = ({ currentDrawdown, maxDrawdown = 20 }) => {
   const riskLevel = percentage < 30 ? 'low' : percentage < 60 ? 'medium' : 'high'
 
   return (
-    <div className="relative w-full">
+    <div className="w-full">
       <div className="flex justify-between text-xs mb-2">
         <span className="text-muted-foreground">Drawdown Risk</span>
         <span className={cn(
@@ -498,10 +520,10 @@ const RiskGauge = ({ currentDrawdown, maxDrawdown = 20 }) => {
           {currentDrawdown.toFixed(1)}% / {maxDrawdown}%
         </span>
       </div>
-      <div className="h-2 bg-secondary rounded-full overflow-hidden">
-        <div className="h-full bg-gradient-to-r from-success via-warning to-danger" />
+      <div className="relative h-2 bg-secondary rounded-full overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-r from-success via-warning to-danger" />
         <div
-          className="h-full bg-background absolute top-0 right-0 transition-all duration-500"
+          className="absolute inset-y-0 right-0 bg-background transition-all duration-500"
           style={{ width: `${100 - percentage}%` }}
         />
       </div>
@@ -681,44 +703,55 @@ export default function App() {
     )
   }
 
-  // Extract data
+  // Extract data with consistent fallbacks
   const state = data?.state?.state || {}
   const lastSignals = state.last_signals || {}
-  const trades = data?.history?.trades || state.trade_history || []
-  const openPositions = data?.state?.positions || state.positions || {}
+  const trades = data?.history?.trades || []
+  const openPositions = data?.state?.positions || {}
   const metrics = data?.metrics?.metrics || {}
   const portfolioSummary = data?.state?.portfolioSummary || {}
   const safetyStatus = data?.state?.safetyStatus || {}
-  const decisionLog = data?.state?.decisions || state.decision_log || []
+  const decisionLog = data?.state?.decisions || []
 
-  // Calculate metrics
+  // Calculate metrics with consistent initial capital
   const totalPnL = state.total_pnl || 0
-  const capital = state.capital || 500
-  const peakCapital = state.risk_state?.peak || 500
+  const capital = state.capital || INITIAL_CAPITAL
+  const peakCapital = state.risk_state?.peak || INITIAL_CAPITAL
   const currentDrawdown = peakCapital > 0 ? ((peakCapital - capital) / peakCapital) * 100 : 0
   const openPositionsCount = Object.keys(openPositions).length
 
   // Calculate total unrealized P&L
   const totalUnrealizedPnL = Object.entries(openPositions).reduce((sum, [symbol, pos]) => {
+    if (!pos || !pos.entry_price) return sum
     const currentPrice = lastSignals[symbol]?.price || pos.entry_price
     const isLong = pos.direction === 'LONG'
     const priceDiff = currentPrice - pos.entry_price
-    const pnl = isLong ? priceDiff * (pos.value / pos.entry_price) : -priceDiff * (pos.value / pos.entry_price)
+    // Calculate position size from value/entry_price, then compute P&L
+    const positionSize = pos.size || (pos.value / pos.entry_price)
+    const pnl = isLong ? priceDiff * positionSize : -priceDiff * positionSize
     return sum + pnl
   }, 0)
 
-  // Equity curve
-  const equityCurve = trades.reduce((acc, trade) => {
-    const prevEquity = acc.length > 0 ? acc[acc.length - 1].equity : 500
-    const pnl = trade.pnl || 0
-    acc.push({
-      date: new Date(trade.timestamp || trade.exit_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      equity: prevEquity + pnl,
-      pnl,
-      value: prevEquity + pnl
-    })
-    return acc
-  }, [{ date: 'Start', equity: 500, pnl: 0, value: 500 }])
+  // Equity curve - use API data if available, otherwise calculate from trades
+  const apiEquityCurve = data?.metrics?.equityCurve
+  const equityCurve = apiEquityCurve && apiEquityCurve.length > 0
+    ? apiEquityCurve.map(point => ({
+        date: point.date || new Date(point.timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        equity: point.equity || point.value,
+        pnl: point.pnl || 0,
+        value: point.equity || point.value
+      }))
+    : trades.reduce((acc, trade) => {
+        const prevEquity = acc.length > 0 ? acc[acc.length - 1].equity : INITIAL_CAPITAL
+        const pnl = trade.pnl || 0
+        acc.push({
+          date: new Date(trade.timestamp || trade.exit_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+          equity: prevEquity + pnl,
+          pnl,
+          value: prevEquity + pnl
+        })
+        return acc
+      }, [{ date: 'Start', equity: INITIAL_CAPITAL, pnl: 0, value: INITIAL_CAPITAL }])
 
   // P&L sparkline data
   const pnlSparkData = equityCurve.map(d => ({ value: d.equity }))
@@ -740,10 +773,10 @@ export default function App() {
   const dailyPnL = Object.entries(dailyPnLData).map(([date, pnl]) => ({ date, pnl }))
 
   // Drawdown chart
-  let drawdownPeak = 500
+  let drawdownPeak = INITIAL_CAPITAL
   const drawdownData = equityCurve.map(point => {
     drawdownPeak = Math.max(drawdownPeak, point.equity)
-    const dd = ((drawdownPeak - point.equity) / drawdownPeak) * 100
+    const dd = drawdownPeak > 0 ? ((drawdownPeak - point.equity) / drawdownPeak) * 100 : 0
     return { date: point.date, drawdown: -dd, equity: point.equity }
   })
 
@@ -940,7 +973,12 @@ export default function App() {
                 />
                 <MetricCard
                   title="Win Rate"
-                  value={portfolioSummary.winRate ? formatPercent(portfolioSummary.winRate) : (metrics.win_rate ? formatPercent(metrics.win_rate) : '--')}
+                  value={(() => {
+                    const winRate = portfolioSummary.winRate ?? metrics.win_rate
+                    if (winRate === undefined || winRate === null) return '--'
+                    // Handle both 0-1 and 0-100 formats
+                    return winRate > 1 ? `${winRate.toFixed(1)}%` : formatPercent(winRate)
+                  })()}
                   subtitle={`W: ${portfolioSummary.winningTrades || 0} / L: ${portfolioSummary.losingTrades || 0}`}
                   icon={Target}
                   color="success"
@@ -1107,8 +1145,11 @@ export default function App() {
                           </p>
                         </div>
                         <div className="text-right text-xs text-muted-foreground">
-                          <p className="font-medium">{formatPercent(entry.confidence || 0)}</p>
-                          <p>{new Date(entry.timestamp).toLocaleTimeString()}</p>
+                          <p className="font-medium">{(() => {
+                            const conf = entry.confidence || 0
+                            return conf > 1 ? `${conf.toFixed(0)}%` : formatPercent(conf)
+                          })()}</p>
+                          <p>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : '--'}</p>
                         </div>
                       </div>
                     ))}
@@ -1135,8 +1176,12 @@ export default function App() {
                 />
                 <MetricCard
                   title="Total Exposure"
-                  value={formatCurrency(Object.values(openPositions).reduce((sum, p) => sum + (p.value || 0), 0))}
-                  subtitle={`${((Object.values(openPositions).reduce((sum, p) => sum + (p.value || 0), 0) / capital) * 100).toFixed(1)}% of capital`}
+                  value={formatCurrency(Object.values(openPositions).reduce((sum, p) => sum + (p?.value || 0), 0))}
+                  subtitle={(() => {
+                    const totalExposure = Object.values(openPositions).reduce((sum, p) => sum + (p?.value || 0), 0)
+                    const exposurePct = capital > 0 ? (totalExposure / capital) * 100 : 0
+                    return `${exposurePct.toFixed(1)}% of capital`
+                  })()}
                   icon={Gauge}
                   color="warning"
                 />
@@ -1206,28 +1251,39 @@ export default function App() {
                       <div className="p-3 rounded-xl bg-secondary/30">
                         <p className="text-xs text-muted-foreground">Avg Holding Time</p>
                         <p className="text-xl font-bold">
-                          {trades.length > 0 ? (() => {
-                            const avgMs = trades.reduce((sum, t) => {
-                              if (t.entry_time && t.exit_time) {
-                                return sum + (new Date(t.exit_time) - new Date(t.entry_time))
-                              }
-                              return sum
-                            }, 0) / trades.filter(t => t.entry_time && t.exit_time).length
+                          {(() => {
+                            const tradesWithTimes = trades.filter(t => t.entry_time && t.exit_time)
+                            if (tradesWithTimes.length === 0) return '--'
+                            const totalMs = tradesWithTimes.reduce((sum, t) => {
+                              return sum + (new Date(t.exit_time) - new Date(t.entry_time))
+                            }, 0)
+                            const avgMs = totalMs / tradesWithTimes.length
                             const hours = avgMs / (1000 * 60 * 60)
+                            if (isNaN(hours) || hours <= 0) return '--'
                             return hours >= 24 ? `${Math.floor(hours / 24)}d` : `${Math.floor(hours)}h`
-                          })() : '--'}
+                          })()}
                         </p>
                       </div>
                       <div className="p-3 rounded-xl bg-success/10">
                         <p className="text-xs text-success">Best Trade</p>
                         <p className="text-xl font-bold text-success">
-                          +{formatCurrency(Math.max(...trades.map(t => t.pnl || 0), 0))}
+                          {(() => {
+                            const pnls = trades.filter(t => t.pnl !== undefined).map(t => t.pnl)
+                            if (pnls.length === 0) return '--'
+                            const best = Math.max(...pnls)
+                            return `+${formatCurrency(best)}`
+                          })()}
                         </p>
                       </div>
                       <div className="p-3 rounded-xl bg-danger/10">
                         <p className="text-xs text-danger">Worst Trade</p>
                         <p className="text-xl font-bold text-danger">
-                          {formatCurrency(Math.min(...trades.map(t => t.pnl || 0), 0))}
+                          {(() => {
+                            const pnls = trades.filter(t => t.pnl !== undefined).map(t => t.pnl)
+                            if (pnls.length === 0) return '--'
+                            const worst = Math.min(...pnls)
+                            return formatCurrency(worst)
+                          })()}
                         </p>
                       </div>
                     </div>
@@ -1276,7 +1332,10 @@ export default function App() {
                       </div>
                       <div className="p-4 rounded-xl bg-secondary/30 text-center">
                         <p className="text-xs text-muted-foreground mb-1">Confidence</p>
-                        <p className="font-bold">{formatPercent(signal.confidence || 0)}</p>
+                        <p className="font-bold">{(() => {
+                          const conf = signal.confidence || 0
+                          return conf > 1 ? `${conf.toFixed(0)}%` : formatPercent(conf)
+                        })()}</p>
                       </div>
                       <div className="p-4 rounded-xl bg-secondary/30 text-center">
                         <p className="text-xs text-muted-foreground mb-1">Strength</p>
@@ -1297,8 +1356,10 @@ export default function App() {
                         </div>
                         <p className="text-xl font-bold text-danger tabular-nums">{formatCurrency(signal.stop_loss)}</p>
                         <p className="text-xs text-danger/70">
-                          {signal.price && signal.stop_loss ?
-                            `${(((signal.stop_loss - signal.price) / signal.price) * 100).toFixed(2)}%` : '--'}
+                          {signal.price && signal.stop_loss ? (() => {
+                            const pct = ((signal.stop_loss - signal.price) / signal.price) * 100
+                            return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+                          })() : '--'}
                         </p>
                       </div>
                       <div className="p-4 rounded-xl bg-success/10 border border-success/20">
@@ -1308,8 +1369,10 @@ export default function App() {
                         </div>
                         <p className="text-xl font-bold text-success tabular-nums">{formatCurrency(signal.take_profit)}</p>
                         <p className="text-xs text-success/70">
-                          {signal.price && signal.take_profit ?
-                            `${(((signal.take_profit - signal.price) / signal.price) * 100).toFixed(2)}%` : '--'}
+                          {signal.price && signal.take_profit ? (() => {
+                            const pct = ((signal.take_profit - signal.price) / signal.price) * 100
+                            return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+                          })() : '--'}
                         </p>
                       </div>
                     </div>
@@ -1416,58 +1479,71 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {trades.slice().reverse().map((trade, i) => (
-                        <tr key={i} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
-                          <td className="p-3 text-muted-foreground text-xs">
-                            <div>{trade.entry_time ? new Date(trade.entry_time).toLocaleDateString() : '--'}</div>
-                            <div className="text-muted-foreground/70">{trade.exit_time ? new Date(trade.exit_time).toLocaleDateString() : 'Open'}</div>
-                          </td>
-                          <td className="p-3">
-                            <div className="flex items-center gap-2">
-                              <div className={cn(
-                                "w-6 h-6 rounded-lg flex items-center justify-center",
-                                trade.symbol === 'BTC' ? "bg-yellow-500" : "bg-blue-500"
-                              )}>
-                                {trade.symbol === 'BTC' ? <Bitcoin className="w-3 h-3 text-white" /> : <Layers className="w-3 h-3 text-white" />}
+                      {trades.slice().reverse().map((trade, i) => {
+                        // Normalize trade fields for consistency
+                        const tradeSymbol = trade.symbol || trade.asset || 'Unknown'
+                        const tradeDirection = trade.direction || trade.action || 'HOLD'
+                        const tradeEntryPrice = trade.entry_price || trade.price
+                        const tradePnlPct = trade.pnl_pct !== undefined
+                          ? (typeof trade.pnl_pct === 'number' ? trade.pnl_pct.toFixed(2) : trade.pnl_pct)
+                          : null
+
+                        return (
+                          <tr key={i} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                            <td className="p-3 text-muted-foreground text-xs">
+                              <div>{trade.entry_time ? new Date(trade.entry_time).toLocaleDateString() : '--'}</div>
+                              <div className="text-muted-foreground/70">{trade.exit_time ? new Date(trade.exit_time).toLocaleDateString() : 'Open'}</div>
+                            </td>
+                            <td className="p-3">
+                              <div className="flex items-center gap-2">
+                                <div className={cn(
+                                  "w-6 h-6 rounded-lg flex items-center justify-center",
+                                  tradeSymbol === 'BTC' ? "bg-yellow-500" : "bg-blue-500"
+                                )}>
+                                  {tradeSymbol === 'BTC' ? <Bitcoin className="w-3 h-3 text-white" /> : <Layers className="w-3 h-3 text-white" />}
+                                </div>
+                                <span className="font-medium">{tradeSymbol}</span>
                               </div>
-                              <span className="font-medium">{trade.symbol}</span>
-                            </div>
-                          </td>
-                          <td className="p-3">
-                            <SignalBadge action={trade.direction || trade.action} />
-                          </td>
-                          <td className="p-3 font-mono tabular-nums">{formatCurrency(trade.entry_price || trade.price)}</td>
-                          <td className="p-3 font-mono tabular-nums">{trade.exit_price ? formatCurrency(trade.exit_price) : '--'}</td>
-                          <td className="p-3 font-mono tabular-nums">{formatCurrency(trade.value)}</td>
-                          <td className="p-3">
-                            <div className={cn(
-                              "font-semibold tabular-nums",
-                              (trade.pnl || 0) >= 0 ? "text-success" : "text-danger"
-                            )}>
-                              {(trade.pnl || 0) >= 0 ? '+' : ''}{formatCurrency(trade.pnl || 0)}
-                            </div>
-                            {trade.pnl_pct !== undefined && (
+                            </td>
+                            <td className="p-3">
+                              <SignalBadge action={tradeDirection} />
+                            </td>
+                            <td className="p-3 font-mono tabular-nums">{formatCurrency(tradeEntryPrice)}</td>
+                            <td className="p-3 font-mono tabular-nums">{trade.exit_price ? formatCurrency(trade.exit_price) : '--'}</td>
+                            <td className="p-3 font-mono tabular-nums">{formatCurrency(trade.value)}</td>
+                            <td className="p-3">
                               <div className={cn(
-                                "text-xs tabular-nums",
-                                (trade.pnl_pct || 0) >= 0 ? "text-success/70" : "text-danger/70"
+                                "font-semibold tabular-nums",
+                                (trade.pnl || 0) >= 0 ? "text-success" : "text-danger"
                               )}>
-                                {(trade.pnl_pct || 0) >= 0 ? '+' : ''}{trade.pnl_pct}%
+                                {(trade.pnl || 0) >= 0 ? '+' : ''}{formatCurrency(trade.pnl || 0)}
                               </div>
-                            )}
-                          </td>
-                          <td className="p-3">
-                            <Badge variant={
-                              trade.exit_reason === 'take_profit' ? 'success' :
-                              trade.exit_reason === 'stop_loss' ? 'danger' : 'secondary'
-                            } className="text-xs">
-                              {trade.exit_reason === 'take_profit' ? 'TP Hit' :
-                               trade.exit_reason === 'stop_loss' ? 'SL Hit' :
-                               trade.exit_reason === 'opposite_signal' ? 'Signal' :
-                               trade.exit_reason || 'Open'}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))}
+                              {tradePnlPct !== null && (
+                                <div className={cn(
+                                  "text-xs tabular-nums",
+                                  parseFloat(tradePnlPct) >= 0 ? "text-success/70" : "text-danger/70"
+                                )}>
+                                  {parseFloat(tradePnlPct) >= 0 ? '+' : ''}{tradePnlPct}%
+                                </div>
+                              )}
+                            </td>
+                            <td className="p-3">
+                              <Badge variant={
+                                trade.exit_reason === 'take_profit' ? 'outline' :
+                                trade.exit_reason === 'stop_loss' ? 'destructive' : 'secondary'
+                              } className={cn(
+                                "text-xs",
+                                trade.exit_reason === 'take_profit' && "border-success text-success"
+                              )}>
+                                {trade.exit_reason === 'take_profit' ? 'TP Hit' :
+                                 trade.exit_reason === 'stop_loss' ? 'SL Hit' :
+                                 trade.exit_reason === 'opposite_signal' ? 'Signal' :
+                                 trade.exit_reason || 'Open'}
+                              </Badge>
+                            </td>
+                          </tr>
+                        )
+                      })}
                       {trades.length === 0 && (
                         <tr>
                           <td colSpan={8} className="p-12 text-center text-muted-foreground">
@@ -1491,28 +1567,38 @@ export default function App() {
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <MetricCard
                   title="Profit Factor"
-                  value={metrics.profit_factor?.toFixed(2) || '--'}
+                  value={metrics.profit_factor ? parseFloat(metrics.profit_factor).toFixed(2) : (metrics.profitFactor ? parseFloat(metrics.profitFactor).toFixed(2) : '--')}
                   subtitle="Gross profit / Gross loss"
                   icon={BarChart3}
                   color="primary"
                 />
                 <MetricCard
                   title="Sharpe Ratio"
-                  value={metrics.sharpe_ratio?.toFixed(2) || '--'}
+                  value={metrics.sharpeRatio || metrics.sharpe_ratio || '--'}
                   subtitle="Risk-adjusted return"
                   icon={Activity}
                   color="purple"
                 />
                 <MetricCard
                   title="Max Drawdown"
-                  value={metrics.max_drawdown ? formatPercent(metrics.max_drawdown) : '--'}
+                  value={(() => {
+                    const maxDD = metrics.maxDrawdown || metrics.max_drawdown
+                    if (!maxDD) return '--'
+                    const value = parseFloat(maxDD)
+                    // Handle both 0-1 and 0-100 formats
+                    return value > 1 ? `${value.toFixed(1)}%` : formatPercent(value)
+                  })()}
                   subtitle="Largest peak to trough"
                   icon={TrendingDown}
                   color="danger"
                 />
                 <MetricCard
                   title="Avg Trade"
-                  value={metrics.avg_trade ? formatCurrency(metrics.avg_trade) : '--'}
+                  value={(() => {
+                    const avgTrade = metrics.avgTrade || metrics.avg_trade || metrics.expectancy
+                    if (!avgTrade) return '--'
+                    return formatCurrency(parseFloat(avgTrade))
+                  })()}
                   subtitle="Average P&L per trade"
                   icon={DollarSign}
                   color="success"
@@ -1617,30 +1703,45 @@ export default function App() {
                     <div className="p-4 rounded-xl bg-secondary/30">
                       <p className="text-xs text-muted-foreground">Win Rate</p>
                       <p className="text-xl font-bold">
-                        {trades.length > 0 ? `${((trades.filter(t => (t.pnl || 0) > 0).length / trades.length) * 100).toFixed(1)}%` : '--'}
+                        {(() => {
+                          const closedTrades = trades.filter(t => t.pnl !== undefined && t.pnl !== null)
+                          if (closedTrades.length === 0) return '--'
+                          const winRate = (closedTrades.filter(t => t.pnl > 0).length / closedTrades.length) * 100
+                          return `${winRate.toFixed(1)}%`
+                        })()}
                       </p>
                     </div>
                     <div className="p-4 rounded-xl bg-success/10">
                       <p className="text-xs text-success">Avg Win</p>
                       <p className="text-xl font-bold text-success">
-                        {trades.filter(t => (t.pnl || 0) > 0).length > 0 ?
-                          formatCurrency(trades.filter(t => (t.pnl || 0) > 0).reduce((sum, t) => sum + t.pnl, 0) / trades.filter(t => (t.pnl || 0) > 0).length) : '--'}
+                        {(() => {
+                          const winningTrades = trades.filter(t => t.pnl !== undefined && t.pnl > 0)
+                          if (winningTrades.length === 0) return '--'
+                          const avgWin = winningTrades.reduce((sum, t) => sum + t.pnl, 0) / winningTrades.length
+                          return `+${formatCurrency(avgWin)}`
+                        })()}
                       </p>
                     </div>
                     <div className="p-4 rounded-xl bg-danger/10">
                       <p className="text-xs text-danger">Avg Loss</p>
                       <p className="text-xl font-bold text-danger">
-                        {trades.filter(t => (t.pnl || 0) < 0).length > 0 ?
-                          formatCurrency(trades.filter(t => (t.pnl || 0) < 0).reduce((sum, t) => sum + t.pnl, 0) / trades.filter(t => (t.pnl || 0) < 0).length) : '--'}
+                        {(() => {
+                          const losingTrades = trades.filter(t => t.pnl !== undefined && t.pnl < 0)
+                          if (losingTrades.length === 0) return '--'
+                          const avgLoss = losingTrades.reduce((sum, t) => sum + t.pnl, 0) / losingTrades.length
+                          return formatCurrency(avgLoss)
+                        })()}
                       </p>
                     </div>
                     <div className="p-4 rounded-xl bg-secondary/30">
                       <p className="text-xs text-muted-foreground">Longest Win Streak</p>
                       <p className="text-xl font-bold">
                         {(() => {
+                          const closedTrades = trades.filter(t => t.pnl !== undefined && t.pnl !== null)
+                          if (closedTrades.length === 0) return 0
                           let max = 0, current = 0
-                          trades.forEach(t => {
-                            if ((t.pnl || 0) > 0) { current++; max = Math.max(max, current) }
+                          closedTrades.forEach(t => {
+                            if (t.pnl > 0) { current++; max = Math.max(max, current) }
                             else { current = 0 }
                           })
                           return max
@@ -1651,9 +1752,11 @@ export default function App() {
                       <p className="text-xs text-muted-foreground">Longest Loss Streak</p>
                       <p className="text-xl font-bold">
                         {(() => {
+                          const closedTrades = trades.filter(t => t.pnl !== undefined && t.pnl !== null)
+                          if (closedTrades.length === 0) return 0
                           let max = 0, current = 0
-                          trades.forEach(t => {
-                            if ((t.pnl || 0) < 0) { current++; max = Math.max(max, current) }
+                          closedTrades.forEach(t => {
+                            if (t.pnl < 0) { current++; max = Math.max(max, current) }
                             else { current = 0 }
                           })
                           return max
@@ -1688,7 +1791,10 @@ export default function App() {
                           </div>
                           <div>
                             <span className="text-muted-foreground">Confidence:</span>
-                            <span className="ml-2 font-medium">{formatPercent(entry.confidence || 0)}</span>
+                            <span className="ml-2 font-medium">{(() => {
+                              const conf = entry.confidence || 0
+                              return conf > 1 ? `${conf.toFixed(0)}%` : formatPercent(conf)
+                            })()}</span>
                           </div>
                           <div>
                             <span className="text-muted-foreground">Strength:</span>
