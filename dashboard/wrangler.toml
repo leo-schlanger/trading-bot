@@ -1,7 +1,7 @@
 # Cloudflare Pages Configuration
-# Deploy with: npx wrangler pages deploy dist --project-name=trading-dashboard
+# Deploy with: npx wrangler pages deploy dist --project-name=trading-bot-dashboard
 
-name = "trading-dashboard"
+name = "trading-bot-dashboard"
 compatibility_date = "2024-01-01"
 pages_build_output_dir = "dist"
 
